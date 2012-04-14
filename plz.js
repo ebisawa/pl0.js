@@ -26,7 +26,7 @@ function PLZ() {
             var REGEXP = /\s+|[a-zA-Z][a-zA-Z0-9]*|[0-9]+|:=|<=|>=|[+\-*=#<>(),:;!\.]/;
             var KEYWORDS = [
                 "begin", "call", "const", "do", "end", "if",
-                "odd", "procedure", "then", "var", "while",
+                "odd", "print", "procedure", "then", "var", "while",
                 "+", "-", "*", "/", "=", ":=", "(", ")",
                 "<", "<=", ">", ">=", ":", ";", ",", ".", "!",
                 ];
@@ -166,6 +166,18 @@ function PLZ() {
                     dump_node(indent + "    ", proc.block);
                 }
 
+                function dump_if(indent, ifo) {
+                    console.log(indent + "+ [if]");
+                    console.log(indent + "  - condition");
+                    dump_node(indent + "    ", ifo.condition);
+
+                    if (ifo.statements.length > 0) {
+                        console.log(indent + "  - statements");
+                        for (i = 0; i < ifo.statements.length; i++)
+                            dump_node(indent + "    ", ifo.statements[i]);
+                    }
+                }
+
                 function dump_loop(ident, loop) {
                     console.log(indent + "+ [loop]");
                     console.log(indent + "  - condition");
@@ -216,12 +228,14 @@ function PLZ() {
                 case "block":      dump_block(indent, ast);        break;
                 case "call":       dump_call(indent, ast);         break;
                 case "ident":      dump_ident(indent, ast);        break;
+                case "if":         dump_if(indent, ast);           break;
                 case "loop":       dump_loop(indent, ast);         break;
                 case "number":     dump_number(indent, ast);       break;
                 case "operation":  dump_operation(indent, ast);    break;
                 case "print":      dump_print(indent, ast);        break;
                 case "procedure":  dump_procedure(indent, ast);    break;
                 default:
+                    console.log("unknown: " + ast.ntype);
                     console.log(ast);
                     break;
                 }
@@ -324,10 +338,12 @@ function PLZ() {
                     return statement_if();
                 else if (token.is_keyword("!"))
                     return statement_print();
+                else if (token.is_keyword("print"))
+                    return statement_print();
                 else if (token.is_keyword("while"))
                     return statement_while();
                 else if (token.type == IDENT)
-                    return NodeAssign(NodeIdent(token), statement_assign());
+                    return [ NodeAssign(NodeIdent(token), statement_assign()) ];
                 else {
                     lexer.unget(token);
                     return null;
@@ -354,7 +370,7 @@ function PLZ() {
 
                 for (;;) {
                     if ((r = statement()) != null)
-                        s.push(r);
+                        s = s.concat(r);
 
                     token = lexer.getnext();
                     if (token.is_keyword(";"))
@@ -501,6 +517,7 @@ function PLZ() {
                             + "' [" + error_unexpected.caller.name
                             + " <- " + error_unexpected.caller.caller.name
                             + " <- " + error_unexpected.caller.caller.caller.name + "]");
+
                 throw "unexpected token";
             }
 
@@ -531,28 +548,335 @@ function PLZ() {
         };
     }
 
+    function CodeGen(ast) {
+        var regs = 0;
+
+        function Environ(name, penv, vars, global) {
+            var vr = {};
+            var label_index = 0;
+
+            for (var i = 0; i < vars.length; i++) {
+                vr[vars[i]] = "r" + regs;
+                regs += 1;
+            }
+
+            this.name = name;
+            this.penv = penv;
+            this.vars = vr;
+            this.global = global;
+
+            this.getreg = function(value) {
+                var reg;
+
+                reg = this.vars[value];
+                if (reg == undefined)
+                    return this.penv.getreg(value);
+                else
+                    return reg;
+            };
+
+            this.getlocalregs = function() {
+                var key, r = [];
+
+                if (!this.global) {
+                    for (key in this.vars)
+                        r.push(this.vars[key]);
+                }
+
+                return r;
+            }
+
+            this.genlabel = function() {
+                var label;
+
+                label = "__" + name + "_" + label_index;
+                label_index += 1;
+
+                return label;
+            };
+        }
+
+        function codegen_block(env, block) {
+            var i, s, rcode = [];
+
+            console.log('---- environ ----');
+            console.log(env);
+
+            rcode = rcode.concat(codegen_statements(env, block.statements));
+            rcode.push([ 'ret' ]);
+
+            return rcode;
+        }
+
+        function codegen_statements(env, statements) {
+            var i, r, rcode = [];
+
+            for (i = 0; i < statements.length; i++) {
+                r = codegen_stmt(env, statements[i]);
+
+                console.log('==== code ====');
+                console.log(r);
+
+                if (typeof r[0] == "object")
+                    rcode = rcode.concat(r);
+                else
+                    rcode.push(r);
+            }
+
+            return rcode;
+        }
+
+        function codegen_stmt(env, stmt, dst) {
+            var reg;
+
+            console.log('---- statement ----');
+            console.log(stmt);
+
+            switch (stmt.ntype) {
+            case 'assign':
+                return codegen_stmt_assign(env, stmt, dst);
+            case 'operation':
+                return codegen_stmt_op(env, stmt, dst);
+            case 'if':
+                return codegen_stmt_if(env, stmt, dst);
+            case 'loop':
+                return codegen_stmt_loop(env, stmt, dst);
+            case 'call':
+                return codegen_stmt_call(env, stmt, dst);
+            case 'print':
+                return codegen_stmt_print(env, stmt, dst);
+            default:
+                throw "unknown statement type";
+            }
+        }
+
+        function codegen_stmt_assign(env, stmt) {
+            reg = env.getreg(stmt.lvalue.value);
+            switch (stmt.rnode.ntype) {
+            case 'number':
+                return [ 'add', stmt.rnode.value, '0', reg ];
+            case 'ident':
+                return [ 'add', env.getreg(stmt.rnode.value), '0', reg ];
+            case 'operation':
+                return codegen_stmt_op(env, stmt.rnode, reg);
+
+            default:
+                return undefined;
+            }
+        }
+
+        function codegen_stmt_op(env, stmt, dst) {
+            var v1, v2, vdst;
+
+            console.log('------ stmt_op ------');
+
+            function stmt_value(value) {
+                switch (value.ntype) {
+                case 'number':
+                    return value.value;
+                case 'ident':
+                    return env.getreg(value.value);
+                default:
+                    throw "unknown value type";
+                }
+            }
+
+            v1 = stmt_value(stmt.value1);
+            v2 = stmt_value(stmt.value2);
+            vdst = (dst == undefined) ? v1 : dst;
+
+            switch (stmt.opcode) {
+            case '+':
+                return [ 'add', v1, v2, vdst ];
+            case '-':
+                return [ 'sub', v1, v2, vdst ];
+            case '*':
+                return [ 'mul', v1, v2, vdst ];
+            case '/':
+                return [ 'div', v1, v2, vdst ];
+            case '=':
+                return [ 'jmpneq', v1, v2, vdst ];
+            case '<':
+                return [ 'jmpnlt', v1, v2, vdst ];
+            case '>':
+                return [ 'jmpngt', v1, v2, vdst ];
+
+            default:
+                throw "unknown opcode";
+            }
+        }
+
+        function codegen_stmt_if(env, stmt) {
+            var rcode = [], else_label;
+
+            console.log('------ if ------');
+            console.log(stmt);
+
+            else_label = env.genlabel();
+            rcode.push(codegen_stmt(env, stmt.condition, else_label ));
+            rcode = rcode.concat(codegen_statements(env, stmt.statements));
+            rcode.push([ 'label', else_label ]);
+
+            return rcode;
+        }
+
+        function codegen_stmt_loop(env, stmt) {
+            var r, rcode = [], start_label, end_label;
+
+            console.log('------ loop ------');
+
+            start_label = env.genlabel();
+            end_label = env.genlabel();
+
+            rcode.push([ 'label', start_label ]);
+            rcode.push(codegen_stmt(env, stmt.condition, end_label ));
+
+            console.log('-------- loop: statements --------');
+
+            rcode = rcode.concat(codegen_statements(env, stmt.statements));
+            rcode.push([ 'jmp', start_label ]);
+            rcode.push([ 'label', end_label ]);
+
+            return rcode;
+        }
+
+        function codegen_stmt_call(env, stmt) {
+            var i, localregs, label, rcode = [];
+
+            console.log('------ call ------');
+
+            localregs = env.getlocalregs();
+            label = '_' + stmt.callee;
+
+            for (i = 0; i < localregs.length; i++)
+                rcode.push([ 'push', localregs[i] ]);
+
+            rcode.push([ 'call', label ]);
+
+            for (i = localregs.length - 1; i >= 0; i--)
+                rcode.push([ 'pop', localregs[i] ]);
+
+            return rcode;
+        }
+
+        function codegen_stmt_print(env, stmt) {
+            var reg;
+
+            console.log('------ print ------');
+
+            console.log(stmt);
+
+            console.log(stmt.value);
+
+            reg = env.getreg(stmt.value);
+            return [ 'print', reg ];
+        }
+
+        return {
+            codegen: function(ast) {
+                var i, r, code = [], root_env, proc_name, proc_block, proc_env;
+
+                for (i = 0, r = []; i < ast.vars.length; i++)
+                    r.push(ast.vars[i].value);
+
+                root_env = new Environ('main', null, r, true);
+                code.push([ 'label', '_main' ]);
+                code = code.concat(codegen_block(root_env, ast));
+
+                for (i = 0; i < ast.procedures.length; i++) {
+                    proc_name = ast.procedures[i].name;
+                    proc_block = ast.procedures[i].block;
+
+                    for (i = 0, r = []; i < proc_block.vars.length; i++)
+                        r.push(proc_block.vars[i].value);
+
+                    proc_env = new Environ(proc_name, root_env, r, false);
+                    code.push([ 'label', '_' + proc_name ]);
+                    code = code.concat(codegen_block(proc_env, proc_block));
+                }
+
+                return code;
+            }
+        };
+    }
+
     this.compile = function(source) {
-        r = Syntax().parse(source);
-        r.dump();
+        var ast = Syntax().parse(source);
+        ast.dump();
+
+        return CodeGen().codegen(ast);
     }
 }
 
 source =
-    "VAR x, squ;\n" +
-    "PROCEDURE square;\n" +
-    "BEGIN\n" +
-    "  squ := x * x\n" +
-    "END;\n" +
-    "\n" +
-    "BEGIN\n" +
-    "  x := 1;\n" +
-    "  WHILE x <= 10 DO\n" +
-    "  BEGIN\n" +
-    "    CALL square;\n" +
-    "    ! squ;\n" +
-    "    x := x + 1;\n" +
-    "  END\n" +
-    "END.\n";
+"var	i, n, f; " +
+    "" +
+"procedure fib; " +
+"var	m, save; " +
+"begin " +
+"	m := n; " +
+"	if m = 0 then " +
+"		f := 1; " +
+"	if m = 1 then " +
+"		f := 1; " +
+"	if m > 1 then begin " +
+"		n := m - 1; " +
+"		call fib; " +
+"		save :=	f; " +
+"		n := m - 2; " +
+"		call fib; " +
+"		f := f + save " +
+"	end " +
+"end; " +
+"" +
+"begin " +
+"	i := 0; " +
+"	while i	< 20 do	begin " +
+"		n := i; " +
+"		call fib; " +
+"		print f; " +
+"		i := i + 1; " +
+"	end " +
+"end. "
+
+function print_code(code) {
+    var i, c, operands;
+
+    for (i = 0; i < code.length; i++) {
+        c = code[i];
+
+        if (c[3] != undefined)
+            operands = 3;
+        else if (c[2] != undefined)
+            operands = 2;
+        else if (c[1] != undefined)
+            operands = 1;
+        else
+            operands = 0;
+
+        if (c[0] == 'label')
+            console.log('| ' + c[1] + ":");
+        else {
+            switch (operands) {
+            case 0:
+                console.log("| \t" + c[0]);
+                break;
+            case 1:
+                console.log("| \t" + c[0] + "\t\t" + c[1]);
+                break;
+            case 2:
+                console.log("| \t" + c[0] + "\t\t" + c[1] + ",\t" + c[2]);
+                break;
+            case 3:
+                console.log("| \t" + c[0] + "\t\t" + c[1] + ",\t" + c[2] + ",\t" + c[3]);
+                break;
+            }
+        }
+    }
+}
 
 pl0 = new PLZ();
-pl0.compile(source);
+code = pl0.compile(source);
+
+console.log(code);
+print_code(code);
