@@ -526,7 +526,7 @@ function PLZ() {
                     var r;
 
                     r = program();
-                    r.dump = function() { dump_node('', r) };
+                    r.dump = function() { dump_node("", r); };
 
                     return r;
                 }
@@ -549,61 +549,64 @@ function PLZ() {
     }
 
     function CodeGen(ast) {
-        var regs = 0;
+        var gregs = 0;
 
         function Environ(name, parent, vars, global) {
-            var vr = {};
-            var label_index = 0;
-
-            for (var i = 0; i < vars.length; i++) {
-                vr[vars[i]] = "r" + regs;
-                regs += 1;
-            }
+            var i, regname, regs = gregs;
 
             this.name = name;
             this.parent = parent;
-            this.vars = vr;
+            this.vars = {};
             this.global = global;
+            this.label_index = 0;
 
-            this.getreg = function(value) {
-                var reg;
-
-                reg = this.vars[value];
-                if (reg == undefined)
-                    return this.parent.getreg(value);
-                else
-                    return reg;
-            };
-
-            this.getlocalregs = function() {
-                var key, r = [];
-
-                if (!this.global) {
-                    for (key in this.vars)
-                        r.push(this.vars[key]);
-                }
-
-                return r;
+            for (i = 0; i < vars.length; i++) {
+                this.vars[vars[i]] = "r" + regs;
+                regs += 1;
             }
 
-            this.genlabel = function() {
-                var label;
-
-                label = "__" + name + "_" + label_index;
-                label_index += 1;
-
-                return label;
-            };
+            if (global)
+                gregs = regs;
         }
+
+        Environ.prototype.getreg = function(value) {
+            var reg;
+
+            reg = this.vars[value];
+            if (reg == undefined)
+                return this.parent.getreg(value);
+            else
+                return reg;
+        };
+
+        Environ.prototype.getlocalregs = function() {
+            var key, r = [];
+
+            if (!this.global) {
+                for (key in this.vars)
+                    r.push(this.vars[key]);
+            }
+
+            return r;
+        };
+
+        Environ.prototype.genlabel = function() {
+            var label;
+
+            label = "__" + this.name + "_" + this.label_index;
+            this.label_index += 1;
+
+            return label;
+        };
 
         function codegen_block(env, block) {
             var i, s, rcode = [];
 
-            console.log('---- environ ----');
+            console.log("---- environ ----");
             console.log(env);
 
             rcode = rcode.concat(codegen_statements(env, block.statements));
-            rcode.push([ 'ret' ]);
+            rcode.push([ "ret" ]);
 
             return rcode;
         }
@@ -614,7 +617,7 @@ function PLZ() {
             for (i = 0; i < statements.length; i++) {
                 r = codegen_stmt(env, statements[i]);
 
-                console.log('==== code ====');
+                console.log("==== code ====");
                 console.log(r);
 
                 if (typeof r[0] == "object")
@@ -629,21 +632,21 @@ function PLZ() {
         function codegen_stmt(env, stmt, dst) {
             var reg;
 
-            console.log('---- statement ----');
+            console.log("---- statement ----");
             console.log(stmt);
 
             switch (stmt.ntype) {
-            case 'assign':
+            case "assign":
                 return codegen_stmt_assign(env, stmt, dst);
-            case 'operation':
+            case "operation":
                 return codegen_stmt_op(env, stmt, dst);
-            case 'if':
+            case "if":
                 return codegen_stmt_if(env, stmt, dst);
-            case 'loop':
+            case "loop":
                 return codegen_stmt_loop(env, stmt, dst);
-            case 'call':
+            case "call":
                 return codegen_stmt_call(env, stmt, dst);
-            case 'print':
+            case "print":
                 return codegen_stmt_print(env, stmt, dst);
             default:
                 throw "unknown statement type";
@@ -653,11 +656,11 @@ function PLZ() {
         function codegen_stmt_assign(env, stmt) {
             reg = env.getreg(stmt.lvalue.value);
             switch (stmt.rnode.ntype) {
-            case 'number':
-                return [ 'add', stmt.rnode.value, reg, '0' ];
-            case 'ident':
-                return [ 'add', env.getreg(stmt.rnode.value), reg, '0' ];
-            case 'operation':
+            case "number":
+                return [ "add", reg, stmt.rnode.value, 0 ];
+            case "ident":
+                return [ "add", reg, env.getreg(stmt.rnode.value), 0 ];
+            case "operation":
                 return codegen_stmt_op(env, stmt.rnode, reg);
 
             default:
@@ -668,13 +671,11 @@ function PLZ() {
         function codegen_stmt_op(env, stmt, dst) {
             var v1, v2, vdst;
 
-            console.log('------ stmt_op ------');
-
             function stmt_value(value) {
                 switch (value.ntype) {
-                case 'number':
+                case "number":
                     return value.value;
-                case 'ident':
+                case "ident":
                     return env.getreg(value.value);
                 default:
                     throw "unknown value type";
@@ -686,20 +687,20 @@ function PLZ() {
             vdst = (dst == undefined) ? v1 : dst;
 
             switch (stmt.opcode) {
-            case '+':
-                return [ 'add', vdst, v1, v2 ];
-            case '-':
-                return [ 'sub', vdst, v1, v2 ];
-            case '*':
-                return [ 'mul', vdst, v1, v2 ];
-            case '/':
-                return [ 'div', vdst, v1, v2 ];
-            case '=':
-                return [ 'bne', vdst, v1, v2 ];
-            case '<':
-                return [ 'bge', vdst, v1, v2 ];
-            case '>':
-                return [ 'ble', vdst, v1, v2 ];
+            case "+":
+                return [ "add", vdst, v1, v2 ];
+            case "-":
+                return [ "sub", vdst, v1, v2 ];
+            case "*":
+                return [ "mul", vdst, v1, v2 ];
+            case "/":
+                return [ "div", vdst, v1, v2 ];
+            case "=":
+                return [ "bne", vdst, v1, v2 ];
+            case "<":
+                return [ "bge", vdst, v1, v2 ];
+            case ">":
+                return [ "ble", vdst, v1, v2 ];
 
             default:
                 throw "unknown opcode";
@@ -709,13 +710,13 @@ function PLZ() {
         function codegen_stmt_if(env, stmt) {
             var rcode = [], else_label;
 
-            console.log('------ if ------');
+            console.log("------ if ------");
             console.log(stmt);
 
             else_label = env.genlabel();
             rcode.push(codegen_stmt(env, stmt.condition, else_label ));
             rcode = rcode.concat(codegen_statements(env, stmt.statements));
-            rcode.push([ 'label', else_label ]);
+            rcode.push([ "label", else_label ]);
 
             return rcode;
         }
@@ -723,19 +724,19 @@ function PLZ() {
         function codegen_stmt_loop(env, stmt) {
             var r, rcode = [], start_label, end_label;
 
-            console.log('------ loop ------');
+            console.log("------ loop ------");
 
             start_label = env.genlabel();
             end_label = env.genlabel();
 
-            rcode.push([ 'label', start_label ]);
+            rcode.push([ "label", start_label ]);
             rcode.push(codegen_stmt(env, stmt.condition, end_label ));
 
-            console.log('-------- loop: statements --------');
+            console.log("-------- loop: statements --------");
 
             rcode = rcode.concat(codegen_statements(env, stmt.statements));
-            rcode.push([ 'jmp', start_label ]);
-            rcode.push([ 'label', end_label ]);
+            rcode.push([ "jmp", start_label ]);
+            rcode.push([ "label", end_label ]);
 
             return rcode;
         }
@@ -743,33 +744,77 @@ function PLZ() {
         function codegen_stmt_call(env, stmt) {
             var i, localregs, label, rcode = [];
 
-            console.log('------ call ------');
+            console.log("------ call ------");
 
             localregs = env.getlocalregs();
-            label = '_' + stmt.callee;
+            label = "_" + stmt.callee;
 
             for (i = 0; i < localregs.length; i++)
-                rcode.push([ 'push', localregs[i] ]);
+                rcode.push([ "push", localregs[i] ]);
 
-            rcode.push([ 'call', label ]);
+            rcode.push([ "call", label ]);
 
             for (i = localregs.length - 1; i >= 0; i--)
-                rcode.push([ 'pop', localregs[i] ]);
+                rcode.push([ "pop", localregs[i] ]);
 
             return rcode;
         }
 
         function codegen_stmt_print(env, stmt) {
-            var reg;
+            return [ "print", env.getreg(stmt.value) ];
+        }
 
-            console.log('------ print ------');
+        function print_code(code) {
+            var i, c, operands;
 
-            console.log(stmt);
+            function strl(str, len) {
+                var i, l, s;
 
-            console.log(stmt.value);
+                str = String(str);
+                l = len - str.length;
+                for (i = 0, s = ""; i < l; i++)
+                    s += " ";
 
-            reg = env.getreg(stmt.value);
-            return [ 'print', reg ];
+                return str + s;
+            }
+
+            for (i = 0; i < code.length; i++) {
+                c = code[i];
+
+                if (c[3] != undefined)
+                    operands = 3;
+                else if (c[2] != undefined)
+                    operands = 2;
+                else if (c[1] != undefined)
+                    operands = 1;
+                else
+                    operands = 0;
+
+                if (c[0] == "label")
+                    console.log("| " + c[1] + ":");
+                else {
+                    switch (operands) {
+                    case 0:
+                        console.log("| \t" + c[0]);
+                        break;
+                    case 1:
+                        console.log("| \t" + c[0] + "\t\t"
+                                    + strl(c[1] + ",", 12));
+                        break;
+                    case 2:
+                        console.log("| \t" + c[0] + "\t\t"
+                                    + strl(c[1] + ",", 12) + "\t"
+                                    + c[2]);
+                        break;
+                    case 3:
+                        console.log("| \t" + c[0] + "\t\t"
+                                    + strl(c[1] + ",", 12) + "\t"
+                                    + strl(c[2] + ",", 12) + "\t"
+                                    + c[3]);
+                        break;
+                    }
+                }
+            }
         }
 
         return {
@@ -779,8 +824,8 @@ function PLZ() {
                 for (i = 0, r = []; i < ast.vars.length; i++)
                     r.push(ast.vars[i].value);
 
-                root_env = new Environ('main', null, r, true);
-                code.push([ 'label', '_main' ]);
+                root_env = new Environ("main", null, r, true);
+                code.push([ "label", "_main" ]);
                 code = code.concat(codegen_block(root_env, ast));
 
                 for (i = 0; i < ast.procedures.length; i++) {
@@ -791,16 +836,18 @@ function PLZ() {
                         r.push(proc_block.vars[i].value);
 
                     proc_env = new Environ(proc_name, root_env, r, false);
-                    code.push([ 'label', '_' + proc_name ]);
+                    code.push([ "label", "_" + proc_name ]);
                     code = code.concat(codegen_block(proc_env, proc_block));
                 }
+
+                code.dump = function() { print_code(code); };
 
                 return code;
             }
         };
     }
 
-    this.compile = function(source) {
+    this.compile_il = function(source) {
         var ast = Syntax().parse(source);
         ast.dump();
 
@@ -808,94 +855,125 @@ function PLZ() {
     }
 }
 
-source =
-"var	i, n, f; " +
-    "" +
-"procedure fib; " +
-"var	m, save; " +
-"begin " +
-"	m := n; " +
-"	if m = 0 then " +
-"		f := 1; " +
-"	if m = 1 then " +
-"		f := 1; " +
-"	if m > 1 then begin " +
-"		n := m - 1; " +
-"		call fib; " +
-"		save :=	f; " +
-"		n := m - 2; " +
-"		call fib; " +
-"		f := f + save " +
-"	end " +
-"end; " +
-"" +
-"begin " +
-"	i := 0; " +
-"	while i	< 20 do	begin " +
-"		n := i; " +
-"		call fib; " +
-"		print f; " +
-"		i := i + 1; " +
-"	end " +
-"end. ";
+function PLZ_ILVM(code, debug) {
+    var regs = [], stack = [];
 
+    function make_labelmap(code) {
+        var i, lmap = {};
 
+        for (i = 0; i < code.length; i++) {
+            if (code[i][0] == "label")
+                lmap[code[i][1]] = i;
+        }
 
-function strl(str, len) {
-    var i, l, s;
+        return lmap
+    }
 
-    str = String(str);
-    l = len - str.length;
-    for (i = 0, s = ''; i < l; i++)
-        s += " ";
+    function loadopr(operand) {
+        var r;
 
-    return str + s;
-}
-
-function print_code(code) {
-    var i, c, operands;
-
-    for (i = 0; i < code.length; i++) {
-        c = code[i];
-
-        if (c[3] != undefined)
-            operands = 3;
-        else if (c[2] != undefined)
-            operands = 2;
-        else if (c[1] != undefined)
-            operands = 1;
-        else
-            operands = 0;
-
-        if (c[0] == 'label')
-            console.log('| ' + c[1] + ":");
+        if (typeof operand == "string" && operand[0] == "r")
+            r = regs[Number(operand.slice(1))];
         else {
-            switch (operands) {
-            case 0:
-                console.log("| \t" + c[0]);
+            r = operand;  // Number(operand);
+        }
+
+        if (r == undefined)
+            r = 0;
+
+        return r;
+    }
+
+    function writeback(dst, value) {
+        if (dst[0] != "r")
+            throw "dst is not a register";
+
+        regs[Number(dst.slice(1))] = value;
+
+        if (debug) {
+            console.log("\nregs =");
+            console.log(regs);
+            console.log("");
+        }
+    }
+
+    this.run = function() {
+        var pc, opcode, dst, opr1, opr2;
+        var labelmap = make_labelmap(code);
+
+        for (pc = 0; pc < code.length; pc++) {
+            if (debug)
+                console.log("pc[" + pc + "] " + code[pc]);
+
+            opcode = code[pc][0];
+            dst = code[pc][1];
+            opr1 = loadopr(code[pc][2]);
+            opr2 = loadopr(code[pc][3]);
+
+            switch (opcode) {
+            case "label":
+                break;  // nop
+
+            case "add":
+                writeback(dst, opr1 + opr2);
                 break;
-            case 1:
-                console.log("| \t" + c[0] + "\t\t"
-                            + strl(c[1] + ",", 12));
+            case "sub":
+                writeback(dst, opr1 - opr2);
                 break;
-            case 2:
-                console.log("| \t" + c[0] + "\t\t"
-                            + strl(c[1] + ",", 12) + "\t"
-                            + c[2]);
+            case "mul":
+                writeback(dst, opr1 * opr2);
                 break;
-            case 3:
-                console.log("| \t" + c[0] + "\t\t"
-                            + strl(c[1] + ",", 12) + "\t"
-                            + strl(c[2] + ",", 12) + "\t"
-                            + c[3]);
+            case "div":
+                writeback(dst, opr1 / opr2);
                 break;
+
+            case "bne":
+                if (opr1 != opr2)
+                    pc = labelmap[dst];
+                break;
+            case "bge":
+                if (opr1 >= opr2)
+                    pc = labelmap[dst];
+                break;
+            case "ble":
+                if (opr1 <= opr2)
+                    pc = labelmap[dst];
+                break;
+            case "jmp":
+                pc = labelmap[dst];
+                break;
+
+            case "call":
+                stack.push(pc);
+                pc = labelmap[dst];
+                break;
+            case "ret":
+                pc = stack.pop();
+                if (pc == undefined)
+                    return;
+                break;
+
+            case "push":
+                stack.push(loadopr(dst));
+                break;
+            case "pop":
+                writeback(dst, stack.pop());
+                break;
+            case "print":
+                console.log(loadopr(dst));
+                break;
+
+            default:
+                throw "unknown opcode";
             }
         }
     }
 }
 
-pl0 = new PLZ();
-code = pl0.compile(source);
+var fs = require("fs");
+var src = "" + fs.readFileSync(process.argv[2]);
+var code = new PLZ().compile_il(src);
+code.dump();
 
-console.log(code);
-print_code(code);
+var ilvm = new PLZ_ILVM(code);
+ilvm.run();
