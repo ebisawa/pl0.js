@@ -631,8 +631,10 @@ function PLZ() {
         function codegen_block(env, block) {
             var i, s, rcode = [];
 
-            console.log("---- environ ----");
-            console.log(env);
+            if (debug) {
+                console.log("---- environ ----");
+                console.log(env);
+            }
 
             rcode = merge_code(rcode, codegen_statements(env, block.statements));
             rcode.push([ "ret" ]);
@@ -646,8 +648,10 @@ function PLZ() {
             for (i = 0; i < statements.length; i++) {
                 r = codegen_stmt(env, statements[i]);
 
-                console.log("==== code ====");
-                console.log(r);
+                if (debug) {
+                    console.log("==== code ====");
+                    console.log(r);
+                }
 
                 if (typeof r[0] == "object")
                     rcode = merge_code(rcode, r);
@@ -661,8 +665,10 @@ function PLZ() {
         function codegen_stmt(env, stmt, dst) {
             var reg;
 
-            console.log("---- statement ----");
-            console.log(stmt);
+            if (debug) {
+                console.log("---- statement ----");
+                console.log(stmt);
+            }
 
             switch (stmt.ntype) {
             case "assign":
@@ -700,8 +706,10 @@ function PLZ() {
         function codegen_stmt_op(env, stmt, dst) {
             var v1, v2, vdst, rcode = [];
 
-            console.log("---- statement: operation ----");
-            console.log(stmt);
+            if (debug) {
+                console.log("---- statement: operation ----");
+                console.log(stmt);
+            }
 
             function stmt_value(value) {
                 var rtmp;
@@ -765,8 +773,10 @@ function PLZ() {
         function codegen_stmt_if(env, stmt) {
             var rcode = [], else_label;
 
-            console.log("------ if ------");
-            console.log(stmt);
+            if (debug) {
+                console.log("------ if ------");
+                console.log(stmt);
+            }
 
             else_label = env.genlabel();
             rcode = merge_code(rcode, codegen_stmt(env, stmt.condition, else_label ));
@@ -779,7 +789,8 @@ function PLZ() {
         function codegen_stmt_loop(env, stmt) {
             var r, rcode = [], start_label, end_label;
 
-            console.log("------ loop ------");
+            if (debug)
+                console.log("------ loop ------");
 
             start_label = env.genlabel();
             end_label = env.genlabel();
@@ -787,7 +798,8 @@ function PLZ() {
             rcode.push([ "label", start_label ]);
             rcode = merge_code(rcode, codegen_stmt(env, stmt.condition, end_label ));
 
-            console.log("-------- loop: statements --------");
+            if (debug)
+                console.log("-------- loop: statements --------");
 
             rcode = merge_code(rcode, codegen_statements(env, stmt.statements));
             rcode.push([ "jmp", start_label ]);
@@ -799,7 +811,8 @@ function PLZ() {
         function codegen_stmt_call(env, stmt) {
             var i, localregs, label, rcode = [];
 
-            console.log("------ call ------");
+            if (debug)
+                console.log("------ call ------");
 
             localregs = env.getlocalregs();
             label = "_" + stmt.callee;
@@ -911,15 +924,16 @@ function PLZ() {
         };
     }
 
-    this.compile_il = function(source) {
-        var ast = Syntax().parse(source);
-        ast.dump();
+    this.parse = function(source) {
+        return Syntax().parse(source);
+    }
 
+    this.generate_il = function(ast) {
         return CodeGen().codegen(ast);
     }
 }
 
-function PLZ_ILVM(code, debug) {
+function PLZ_ILVM(code) {
     var regs = [], stack = [];
 
     function make_labelmap(code) {
@@ -936,14 +950,12 @@ function PLZ_ILVM(code, debug) {
     function loadopr(operand) {
         var r;
 
-        if (typeof operand == "string" && operand[0] == "r")
-            r = regs[Number(operand.slice(1))];
-        else {
+        if (typeof operand == "string" && operand[0] == "r") {
+            if ((r = regs[Number(operand.slice(1))]) == undefined)
+                r = 0;
+        } else {
             r = operand;  // Number(operand);
         }
-
-        if (r == undefined)
-            r = 0;
 
         return r;
     }
@@ -962,12 +974,12 @@ function PLZ_ILVM(code, debug) {
     }
 
     this.run = function() {
-        var pc, opcode, dst, opr1, opr2;
+        var pc, clock, opcode, dst, opr1, opr2;
         var labelmap = make_labelmap(code);
 
-        for (pc = 0; pc < code.length; pc++) {
+        for (pc = 0, clock = 1; pc < code.length; pc++, clock++) {
             if (debug)
-                console.log("pc[" + pc + "] " + code[pc]);
+                console.log(clock + ": pc[" + pc + "] " + code[pc]);
 
             opcode = code[pc][0];
             dst = code[pc][1];
@@ -1042,10 +1054,18 @@ function PLZ_ILVM(code, debug) {
     }
 }
 
+var debug = process.argv[3];
 var fs = require("fs");
 var src = "" + fs.readFileSync(process.argv[2]);
-var code = new PLZ().compile_il(src);
-code.dump();
+var plz = new PLZ();
 
-var ilvm = new PLZ_ILVM(code);
+var ast = plz.parse(src);
+if (debug)
+    ast.dump();
+
+var il = plz.generate_il(ast);
+if (debug)
+    il.dump();
+
+var ilvm = new PLZ_ILVM(il);
 ilvm.run();
