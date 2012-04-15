@@ -551,7 +551,7 @@ function PLZ() {
     function CodeGen(ast) {
         var regs = 0;
 
-        function Environ(name, penv, vars, global) {
+        function Environ(name, parent, vars, global) {
             var vr = {};
             var label_index = 0;
 
@@ -561,7 +561,7 @@ function PLZ() {
             }
 
             this.name = name;
-            this.penv = penv;
+            this.parent = parent;
             this.vars = vr;
             this.global = global;
 
@@ -570,7 +570,7 @@ function PLZ() {
 
                 reg = this.vars[value];
                 if (reg == undefined)
-                    return this.penv.getreg(value);
+                    return this.parent.getreg(value);
                 else
                     return reg;
             };
@@ -654,9 +654,9 @@ function PLZ() {
             reg = env.getreg(stmt.lvalue.value);
             switch (stmt.rnode.ntype) {
             case 'number':
-                return [ 'add', stmt.rnode.value, '0', reg ];
+                return [ 'add', stmt.rnode.value, reg, '0' ];
             case 'ident':
-                return [ 'add', env.getreg(stmt.rnode.value), '0', reg ];
+                return [ 'add', env.getreg(stmt.rnode.value), reg, '0' ];
             case 'operation':
                 return codegen_stmt_op(env, stmt.rnode, reg);
 
@@ -687,19 +687,19 @@ function PLZ() {
 
             switch (stmt.opcode) {
             case '+':
-                return [ 'add', v1, v2, vdst ];
+                return [ 'add', vdst, v1, v2 ];
             case '-':
-                return [ 'sub', v1, v2, vdst ];
+                return [ 'sub', vdst, v1, v2 ];
             case '*':
-                return [ 'mul', v1, v2, vdst ];
+                return [ 'mul', vdst, v1, v2 ];
             case '/':
-                return [ 'div', v1, v2, vdst ];
+                return [ 'div', vdst, v1, v2 ];
             case '=':
-                return [ 'jmpneq', v1, v2, vdst ];
+                return [ 'bne', vdst, v1, v2 ];
             case '<':
-                return [ 'jmpnlt', v1, v2, vdst ];
+                return [ 'bge', vdst, v1, v2 ];
             case '>':
-                return [ 'jmpngt', v1, v2, vdst ];
+                return [ 'ble', vdst, v1, v2 ];
 
             default:
                 throw "unknown opcode";
@@ -837,7 +837,20 @@ source =
 "		print f; " +
 "		i := i + 1; " +
 "	end " +
-"end. "
+"end. ";
+
+
+
+function strl(str, len) {
+    var i, l, s;
+
+    str = String(str);
+    l = len - str.length;
+    for (i = 0, s = ''; i < l; i++)
+        s += " ";
+
+    return str + s;
+}
 
 function print_code(code) {
     var i, c, operands;
@@ -862,13 +875,19 @@ function print_code(code) {
                 console.log("| \t" + c[0]);
                 break;
             case 1:
-                console.log("| \t" + c[0] + "\t\t" + c[1]);
+                console.log("| \t" + c[0] + "\t\t"
+                            + strl(c[1] + ",", 12));
                 break;
             case 2:
-                console.log("| \t" + c[0] + "\t\t" + c[1] + ",\t" + c[2]);
+                console.log("| \t" + c[0] + "\t\t"
+                            + strl(c[1] + ",", 12) + "\t"
+                            + c[2]);
                 break;
             case 3:
-                console.log("| \t" + c[0] + "\t\t" + c[1] + ",\t" + c[2] + ",\t" + c[3]);
+                console.log("| \t" + c[0] + "\t\t"
+                            + strl(c[1] + ",", 12) + "\t"
+                            + strl(c[2] + ",", 12) + "\t"
+                            + c[3]);
                 break;
             }
         }
