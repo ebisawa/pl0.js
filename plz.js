@@ -1053,7 +1053,7 @@ function PLZ_ILVM(code, ilvm_debug) {
 
 function PLZ_ILX86(ilcode, _debug) {
     var Regs = function() {
-	var treg_table = {};
+	var iareg_vrmap = {};
         var iareg_status = {
             "eax": false, "ebx": false,
 	    "ecx": false, "edx": false,
@@ -1069,8 +1069,8 @@ function PLZ_ILX86(ilcode, _debug) {
 	    }
 	}
 
-	function iareg_release(iareg) {
-	    iareg_status[iareg] = false;
+	function iareg_rename(new_iareg, old_iareg) {
+	    iareg_vrmap[new_iareg] = iareg_vrmap[old_iareg];
 	}
 
 	function iareg_any() {
@@ -1078,13 +1078,8 @@ function PLZ_ILX86(ilcode, _debug) {
 		if (iareg_status[key] == false)
 		    return key;
 	    }
-	}
 
-	function iareg_rename(new_iareg, old_iareg) {
-	    for (var key in treg_table) {
-		if (treg_table[key] == old_iareg)
-		    treg_table[key] = new_iareg;
-	    }
+	    throw "XXX no regs";
 	}
 
 	function iareg_use(iareg) {
@@ -1101,35 +1096,36 @@ function PLZ_ILX86(ilcode, _debug) {
 		    return [ "mov", nreg, iareg ];
 		} else {  
 		    // all registers are used. push to swap...
-		    throw "XXX akakak";
+		    throw "XXX no register";
 		}
 	    }
 	}
 
-	function treg_map(treg, iareg) {
-	    treg_table[treg] = iareg;
+	function iareg_release(iareg) {
+	    iareg_status[iareg] = false;
 	}
 
-	function treg_unmap(treg) {
-	    treg_table[treg] = null;
+	function iareg_mapvr(iareg, vreg) {
+	    iareg_vrmap[iareg] = vreg;
 	}
 
-	function treg_resolv(treg) {
-	    return treg_table[treg];
+	function iareg_resvr(vreg) {
+	    for (var key in iareg_vrmap) {
+		if (iareg_vrmap[key] == vreg)
+		    return key;
+	    }
 	}
 
         return {
-	    iareg_reserve: iareg_reserve,
-	    iareg_release: iareg_release,
 	    iareg_any: iareg_any,
 	    iareg_use: iareg_use,
-	    treg_map: treg_map,
-	    treg_unmap: treg_unmap,
-	    treg_resolv: treg_resolv,
+	    iareg_release: iareg_release,
+	    iareg_mapvr: iareg_mapvr,
+	    iareg_resvr: iareg_resvr,
 
 	    showtable: function() {
 		console.log(iareg_status);
-		console.log(treg_table);
+		console.log(iareg_vrmap);
 	    }
         };
     }();
@@ -1184,11 +1180,14 @@ function PLZ_ILX86(ilcode, _debug) {
 	};
 
 	function generate_opr_gr_reg(opr) {
-	    var rcode = [];
-	    var reg = Regs.iareg_any();
+	    var reg, rcode = [];
 
-	    rcode = merge_code(rcode, Regs.iareg_use(reg));
-	    rcode.push([ "mov", reg, "[" + opr + "]" ]);
+	    if ((reg = Regs.iareg_resvr(opr)) == undefined) {
+		reg = Regs.iareg_any();
+		Regs.iareg_mapvr(reg, opr);
+		rcode = merge_code(rcode, Regs.iareg_use(reg));
+		rcode.push([ "mov", reg, "[" + opr + "]" ]);
+	    }
 
 	    return [ rcode, reg ];
 	}
@@ -1196,10 +1195,10 @@ function PLZ_ILX86(ilcode, _debug) {
 	function generate_opr_tr_reg(opr) {
 	    var reg, rcode = [];
 
-	    if ((reg = Regs.treg_resolv(opr)) == undefined) {
+	    if ((reg = Regs.iareg_resvr(opr)) == undefined) {
 		reg = Regs.iareg_any();
+		Regs.iareg_mapvr(reg, opr);
 		rcode = merge_code(rcode, Regs.iareg_use(reg));
-		Regs.treg_map(opr, reg);
 	    }
 
 	    return [ rcode, reg ];
@@ -1230,7 +1229,7 @@ function PLZ_ILX86(ilcode, _debug) {
 
 
 	function generate_epi_eax_tr(dst, opr1) {
-	    Regs.treg_map(dst, "eax");
+	    Regs.iareg_mapvr("eax", dst);
 	    return [];
 	}
 
@@ -1238,13 +1237,14 @@ function PLZ_ILX86(ilcode, _debug) {
 	    var rcode = [];
 
 	    rcode.push([ "mov", "[" + dst + "]", opr1 ]);
+	    Regs.iareg_mapvr(opr1, dst);   // XXX mapvr2?
 	    Regs.iareg_release(opr1);
 
 	    return rcode;
 	}
 
 	function generate_epi_reg_tr(dst, opr1) {
-	    Regs.treg_map(dst, opr1);
+	    Regs.iareg_mapvr(opr1, dst);
 	    return [];
 	}
 
@@ -1269,7 +1269,7 @@ function PLZ_ILX86(ilcode, _debug) {
 	    if (opr.match(/^lr/))
 		return "lr";
 	    if (opr.match(/^tr/))
-		return (Regs.treg_resolv(opr) == "eax") ? "eax" : "tr";
+		return (Regs.iareg_resvr(opr) == "eax") ? "eax" : "tr";
 
 	    throw "unknown operand type";
 	}
