@@ -582,6 +582,7 @@ function PLZ() {
             this.parent = parent;
             this.tmpregs = 0;
             this.vars = {};
+            this.vars_count = vars.length;
             this.global = global;
             this.label_index = 0;
 
@@ -621,16 +622,16 @@ function PLZ() {
             return label;
         };
 
-	function merge_code(basecode, newcode) {
-	    if (newcode == undefined)
-		return basecode;
-	    if (typeof newcode[0] == "object")
-		return basecode.concat(newcode);
-	    else {
-		basecode.push(newcode);
-		return basecode;
-	    }
-	}
+        function merge_code(basecode, newcode) {
+            if (newcode == undefined)
+                return basecode;
+            if (typeof newcode[0] == "object")
+                return basecode.concat(newcode);
+            else {
+                basecode.push(newcode);
+                return basecode;
+            }
+        }
 
         function codegen_block(env, block) {
             var i, s, rcode = [];
@@ -886,13 +887,14 @@ function PLZ() {
 
         return {
             codegen: function(ast) {
-                var i, r, code = [], root_env, proc_name, proc_block, proc_env;
+                var i, r, len, code = [], root_env, proc_name, proc_block, proc_env;
 
                 for (i = 0, r = []; i < ast.vars.length; i++)
                     r.push(ast.vars[i].value);
 
                 root_env = new Environ("main", null, r, true);
                 code.push([ "_label", "_main" ]);
+                code.push([ "_frame", root_env.vars_count ]);
                 code = code.concat(codegen_block(root_env, ast));
 
                 for (i = 0; i < ast.procedures.length; i++) {
@@ -903,7 +905,10 @@ function PLZ() {
                         r.push(proc_block.vars[i].value);
 
                     proc_env = new Environ(proc_name, root_env, r, false);
+                    len = 0; for (var x in proc_env.vars) { len++; }
+
                     code.push([ "_label", "_" + proc_name ]);
+                    code.push([ "_frame", proc_env.vars_count ]);
                     code = code.concat(codegen_block(proc_env, proc_block));
                 }
 
@@ -1044,41 +1049,32 @@ function PLZ_ILVM(code, ilvm_debug) {
     }
 }
 
-function PLZ_ILX86(ilcode, _debug) {
+function CodeGenX86(ilcode) {
     var Regs = function() {
-        var iareg_vrmap = {};
         var iareg_status = {};
 
         function iareg_init() {
-            iareg_vrmap = {};
             iareg_status = {
-                "eax": false, "ebx": false,
-                "ecx": false, "edx": false,
-//                "esi": false, "edi": false,
+                "eax": { used: false }, "ebx": { used: false },
+                "ecx": { used: false }, "edx": { used: false },
+                "esi": { used: false }, "edi": { used: false },
             };
         }
 
         function iareg_reserve(iareg) {
-            if (iareg_status[iareg])
+            if (iareg_status[iareg].used)
                 return false;
             else {
-                iareg_status[iareg] = true;
+                iareg_status[iareg].used = true;
                 return true;
             }
         }
 
-        function iareg_rename(new_iareg, old_iareg) {
-            iareg_vrmap[new_iareg] = iareg_vrmap[old_iareg];
-        }
-
         function iareg_any() {
             for (var key in iareg_status) {
-                if (key != "eax" && iareg_status[key] == false)
+                if (iareg_status[key].used == false)
                     return key;
             }
-
-            if (iareg_status["eax"] == false)
-                return key;
 
             throw "XXX noregs";
         }
@@ -1094,6 +1090,7 @@ function PLZ_ILX86(ilcode, _debug) {
                     // move reg to other reg is available
                     iareg_reserve(nreg);
                     iareg_rename(nreg, iareg);
+                    iareg_reserve(iareg);
                     return [ "mov", nreg, iareg ];
                 } else {
                     // all registers are used. push to swap...
@@ -1102,18 +1099,56 @@ function PLZ_ILX86(ilcode, _debug) {
             }
         }
 
+        function iareg_rename(new_iareg, old_iareg) {
+            iareg_status[new_iareg].vreg = iareg_status[old_iareg].vreg;
+            iareg_status[new_iareg].value = iareg_status[old_iareg].value;
+            iareg_destroy(old_iareg);
+        }
+
         function iareg_release(iareg) {
-            iareg_status[iareg] = false;
+            if (iareg_status[iareg] != undefined)
+                iareg_status[iareg].used = false;
         }
 
-        function iareg_mapvr(iareg, vreg) {
-            iareg_vrmap[iareg] = vreg;
+        function iareg_destroy(iareg) {
+            if (iareg_status[iareg] != undefined) {
+                iareg_status[iareg].used = false;
+                delete iareg_status[iareg].vreg;
+                delete iareg_status[iareg].value;
+            }
         }
 
-        function iareg_resvr(vreg) {
-            for (var key in iareg_vrmap) {
-                if (iareg_vrmap[key] == vreg)
+        function iareg_assoc_vreg(iareg, vreg) {
+            iareg_status[iareg].vreg = vreg;
+        }
+
+        function iareg_assoc_const(iareg, value) {
+            iareg_status[iareg].value = value;
+        }
+
+        function vreg_resolv_iareg(vreg) {
+            for (var key in iareg_status) {
+                if (iareg_status[key].vreg == vreg)
                     return key;
+            }
+        }
+
+        // XXX multi assoc
+        function vreg_resolv_number(vreg) {
+            for (var key in iareg_status) {
+                if (iareg_status[key].vreg == vreg)
+                    return iareg_status[key].value;
+            }
+        }
+
+        function vreg_assoc_const(vreg, value) {
+            for (var key in iareg_status) {
+                if (iareg_status[key].vreg == vreg) {
+                    if (value == null)
+                        delete iareg_status[key].value;
+                    else
+                        iareg_status[key].value = value;
+                }
             }
         }
 
@@ -1121,15 +1156,19 @@ function PLZ_ILX86(ilcode, _debug) {
 
         return {
         iareg_init: iareg_init,
-	    iareg_any: iareg_any,
-	    iareg_use: iareg_use,
-	    iareg_release: iareg_release,
-	    iareg_mapvr: iareg_mapvr,
-	    iareg_resvr: iareg_resvr,
+        iareg_any: iareg_any,
+        iareg_use: iareg_use,
+        iareg_release: iareg_release,
+        iareg_destroy: iareg_destroy,
+        iareg_assoc_vreg: iareg_assoc_vreg,
+        iareg_assoc_const: iareg_assoc_const,
 
-	    showtable: function() {
+        vreg_resolv_number: vreg_resolv_number,
+        vreg_resolv_iareg: vreg_resolv_iareg,
+        vreg_assoc_const: vreg_assoc_const,
+
+        showtable: function() {
                 console.log(iareg_status);
-                console.log(iareg_vrmap);
             }
         };
     }();
@@ -1174,56 +1213,73 @@ function PLZ_ILX86(ilcode, _debug) {
 
         var epitab = {
             "eax": {
-                "tr": generate_epi_eax_tr
+                "gr": generate_epi_eax_gr,
+                "lr": generate_epi_eax_lr,
+                "tr": generate_epi_eax_tr,
             },
 
             "reg": {
                 "gr": generate_epi_reg_gr,
                 "lr": generate_epi_reg_lr,
-                "tr": generate_epi_reg_tr
+                "tr": generate_epi_reg_tr,
+            },
+
+            "imm": {
+                "gr": generate_epi_imm_gr,
+                "lr": generate_epi_imm_lr,
+                "tr": generate_epi_imm_tr,
             },
         };
+
+        function lraddr(lreg) {
+            var n = parseInt(lreg.substr(2));
+            return "[ebp-" + (n + 1) * 4 + "]";
+        }
 
         function generate_opr_gr_reg(opr) {
             var reg, rcode = [];
 
-            if ((reg = Regs.iareg_resvr(opr)) == undefined) {
+            if ((reg = Regs.vreg_resolv_iareg(opr)) == undefined) {
                 reg = Regs.iareg_any();
-                Regs.iareg_mapvr(reg, opr);
                 rcode = merge_code(rcode, Regs.iareg_use(reg));
                 rcode.push([ "mov", reg, "[" + opr + "]" ]);
+                Regs.iareg_assoc_vreg(reg, opr);
+                Regs.iareg_assoc_const(reg, null);
             }
 
             return [ rcode, reg ];
         }
 
         function generate_opr_gr_mem(opr) {
-            return [ undefined, '[' + opr + ']' ];
+            return [ undefined, "dword ptr [" + opr + "]" ];
         }
 
         function generate_opr_lr_reg(opr) {
             var reg, rcode = [];
 
-            if ((reg = Regs.iareg_resvr(opr)) == undefined) {
+            if ((reg = Regs.vreg_resolv_iareg(opr)) == undefined) {
                 reg = Regs.iareg_any();
                 rcode = merge_code(rcode, Regs.iareg_use(reg));
-                rcode.push([ "mov", reg, "[ebp+" + opr + "]" ]);
-                Regs.iareg_mapvr(reg, opr);
+                rcode.push([ "mov", reg, lraddr(opr) ]);
+                Regs.iareg_assoc_vreg(reg, opr);
+                Regs.iareg_assoc_const(reg, null);
             }
 
             return [ rcode, reg ];
         }
 
         function generate_opr_lr_mem(opr) {
-            return [ undefined, '[ebp+' + opr + ']' ];
+            return [ undefined, "dword ptr " + lraddr(opr) ];
         }
 
         function generate_opr_tr_eax(opr) {
             var rcode = [];
 
-            if ((reg = Regs.iareg_resvr(opr)) == undefined) {
+            if ((reg = Regs.vreg_resolv_iareg(opr)) != "eax") {
                 rcode = merge_code(rcode, Regs.iareg_use("eax"));
-                Regs.iareg_mapvr("eax", opr);
+                rcode.push([ "mov", "eax", reg ]);
+                Regs.iareg_assoc_vreg("eax", opr);
+                Regs.iareg_assoc_const("eax", null);
             }
 
             return [ rcode, reg ];
@@ -1232,10 +1288,11 @@ function PLZ_ILX86(ilcode, _debug) {
         function generate_opr_tr_reg(opr) {
             var reg, rcode = [];
 
-            if ((reg = Regs.iareg_resvr(opr)) == undefined) {
+            if ((reg = Regs.vreg_resolv_iareg(opr)) == undefined) {
                 reg = Regs.iareg_any();
                 rcode = merge_code(rcode, Regs.iareg_use(reg));
-                Regs.iareg_mapvr(reg, opr);
+                Regs.iareg_assoc_vreg(reg, opr);
+                Regs.iareg_assoc_const(reg, null);
             }
 
             return [ rcode, reg ];
@@ -1246,6 +1303,7 @@ function PLZ_ILX86(ilcode, _debug) {
 
             rcode = merge_code(rcode, Regs.iareg_use("eax"));
             rcode.push([ "mov", "eax", opr ]);
+            Regs.iareg_assoc_const("eax", opr);
 
             return [ rcode, "eax" ];
         }
@@ -1256,6 +1314,7 @@ function PLZ_ILX86(ilcode, _debug) {
 
             rcode = merge_code(rcode, Regs.iareg_use(reg));
             rcode.push([ "mov", reg, opr ]);
+            Regs.iareg_assoc_const(reg, opr);
 
             return [ rcode, reg ];
         }
@@ -1264,9 +1323,30 @@ function PLZ_ILX86(ilcode, _debug) {
             return [ undefined, opr ];
         }
 
+        ///////
+        function generate_epi_eax_gr(dst, opr1) {
+            var rcode = [];
+
+            rcode.push([ "mov", "[" + dst + "]", "eax" ]);
+            Regs.iareg_assoc_vreg("eax", dst);
+            Regs.vreg_assoc_const(dst, null);
+
+            return rcode;
+        }
+
+        function generate_epi_eax_lr(dst, opr1) {
+            var rcode = [];
+
+            rcode.push([ "mov", lraddr(dst), "eax" ]);
+            Regs.iareg_assoc_vreg("eax", dst);
+            Regs.vreg_assoc_const(dst, null);
+
+            return rcode;
+        }
 
         function generate_epi_eax_tr(dst, opr1) {
-            Regs.iareg_mapvr("eax", dst);
+            Regs.iareg_assoc_vreg("eax", dst);
+            Regs.vreg_assoc_const(dst, null);
             return [];
         }
 
@@ -1274,8 +1354,9 @@ function PLZ_ILX86(ilcode, _debug) {
             var rcode = [];
 
             rcode.push([ "mov", "[" + dst + "]", opr1 ]);
-            Regs.iareg_mapvr(opr1, dst);   // XXX mapvr2?
+            Regs.iareg_assoc_vreg(opr1, dst);
             Regs.iareg_release(opr1);
+            Regs.vreg_assoc_const(dst, null);
 
             return rcode;
         }
@@ -1283,25 +1364,55 @@ function PLZ_ILX86(ilcode, _debug) {
         function generate_epi_reg_lr(dst, opr1) {
             var rcode = [];
 
-            rcode.push([ "mov", "[ebp+" + dst + "]", opr1 ]);
-            Regs.iareg_mapvr(opr1, dst);   // XXX mapvr2?
+            rcode.push([ "mov", lraddr(dst), opr1 ]);
+            Regs.iareg_assoc_vreg(opr1, dst);
             Regs.iareg_release(opr1);
+            Regs.vreg_assoc_const(dst, null);
 
             return rcode;
         }
 
         function generate_epi_reg_tr(dst, opr1) {
-            Regs.iareg_mapvr(opr1, dst);
+            Regs.iareg_assoc_vreg(opr1, dst);
+            Regs.vreg_assoc_const(dst, null);
             return [];
         }
 
-        function generate_opr(opr, target) {
-            var t = oprtype(opr);
-            var opspec = t + " -> " + target;
+        function generate_epi_imm_gr(dst, opr1) {
+            Regs.vreg_assoc_const(dst, opr1);
+            return [ "mov", "dword ptr [" + dst + "]", opr1 ];
+        }
 
-            console.log("generate_opr: " + opspec);
+        function generate_epi_imm_lr(dst, opr1) {
+            Regs.vreg_assoc_const(dst, opr1);
+            return [ "mov", lraddr(dst), opr1 ];
+        }
+
+        function generate_epi_imm_tr(dst, opr1) {
+            var rcode = [];
+            var reg = Regs.iareg_any();
+
+            rcode = merge_code(rcode, Regs.iareg_use(reg));
+            rcode.push([ "mov", reg, opr1 ]);
+
+            // opr1 -> imm
+            // reg  -> iareg (tmp)
+            // dst  -> treg
+
+            Regs.iareg_assoc_vreg(reg, dst);
+            Regs.vreg_assoc_const(dst, opr1);
+
+            return rcode;
+        }
+
+        function generate_opr(opr, target) {
+            // XXX 2 type case? e.g. register and const (cached)
+            var t = oprtype(opr);
+
+            if (debug)
+                console.log("generate_opr: " + t + " -> " + target);
             if (opcost[t][target].gencode == undefined)
-                throw "operand error: " + opspec;
+                throw "unsuppotyed operand";
 
             return opcost[t][target].gencode(opr);
         }
@@ -1316,7 +1427,7 @@ function PLZ_ILX86(ilcode, _debug) {
             if (opr.match(/^lr/))
                 return "lr";
             if (opr.match(/^tr/))
-                return (Regs.iareg_resvr(opr) == "eax") ? "eax" : "tr";
+                return (Regs.vreg_resolv_iareg(opr) == "eax") ? "eax" : "tr";
 
             throw "unknown operand type: " + opr;
         }
@@ -1362,7 +1473,7 @@ function PLZ_ILX86(ilcode, _debug) {
             return rcode;
         }
 
-        this.generate_epilogue = function(dst) {
+        this.generate_epilogue = function(dst, rvalue) {
             if (this.opspec.dstspec == undefined)
                 return [];
 
@@ -1372,14 +1483,18 @@ function PLZ_ILX86(ilcode, _debug) {
 
             if (f == undefined)
                 throw "epilogue not implemented: " + epispec;
+            if (debug)
+                console.log("epilogue: " + epispec);
 
-            console.log("epilogue: " + epispec);
-            return f(dst, this.opr1_iaop);
+            if (rvalue == undefined)
+                rvalue = this.opr1_iaop;
+
+            return f(dst, rvalue);
         }
     };
 
     function generate_code(dst, opr1, opr2, opspec) {
-        var i, opr, bopr, rcode, epicode;
+        var i, opr, bopr, r, gcode, rcode, epicode;
 
         for (i = 0; i < opspec.length; i++) {
             opr = new Operands(dst, opr1, opr2, opspec[i]);
@@ -1388,30 +1503,53 @@ function PLZ_ILX86(ilcode, _debug) {
         }
 
         rcode = bopr.generate_prologue();
-        console.log('>>> prologue');
-        console.log(rcode);
-        console.log('<<<');
 
-        rcode = merge_code(rcode, bopr.opspec.codegen(bopr.opr1_iaop, bopr.opr2_iaop));
+        if (debug) {
+            console.log('>>> prologue');
+            console.log(rcode);
+            console.log('<<<');
+        }
 
-        epicode = bopr.generate_epilogue(dst);
+        r = bopr.opspec.codegen(bopr.opr1_iaop, bopr.opr2_iaop);
+        gcode = r[0];
+        rcode = merge_code(rcode, gcode);
+
+        if (debug) {
+            console.log('>>> code');
+            console.log(gcode);
+            console.log('<<<');
+        }
+
+        epicode = bopr.generate_epilogue(dst, r[1]);
         rcode = merge_code(rcode, epicode);
 
-        console.log('>>> epilogue');
-        console.log(epicode);
-        console.log('<<<');
+        if (debug) {
+            console.log('>>> epilogue');
+            console.log(epicode);
+            console.log('<<<');
+        }
 
         if (typeof bopr.opr2_iaop == "string")
             Regs.iareg_release(bopr.opr2_iaop);
 
-        Regs.showtable();
+        if (debug)
+            Regs.showtable();
 
         return rcode;
     }
 
     function generate_code_label(dst, opcode, opr1, opr2) {
         Regs.iareg_init();
-        return [ "_label", dst ];
+        return [ [ "_label", dst ] ];
+    }
+
+    function generate_code_frame(dst, opcode, opr1, opr2) {
+        var rcode = [];
+
+        rcode.push([ 'push', 'ebp' ]);
+        rcode.push([ 'mov', 'ebp', 'esp' ]);
+        rcode.push([ 'sub', 'esp', dst * 4 ]);
+        return rcode;
     }
 
     function generate_code_print(dst, opcode, opr1, opr2) {
@@ -1420,13 +1558,14 @@ function PLZ_ILX86(ilcode, _debug) {
 
             rcode.push([ "push", opr1 ]);
             rcode.push([ "call", "_print" ]);
-            rcode.push([ "pop", opr1 ]);
+            rcode.push([ "add", "esp", 4 ]);
 
             Regs.iareg_init();
-            return rcode;
+            return [ rcode ];
         };
 
         var t = [
+            { srcspec: [ "mem", "imm" ], srcswap: false, codegen: f },
             { srcspec: [ "reg", "imm" ], srcswap: false, codegen: f },
             ];
 
@@ -1434,34 +1573,44 @@ function PLZ_ILX86(ilcode, _debug) {
     }
 
     function generate_code_add(dst, opcode, opr1, opr2) {
-        var f = function(opr1, opr2) {
+        function add_reg(opr1, opr2) {
             if (opr2 == 0)
-                return [];
+                return [ [] ];
             else
-                return [ "add", opr1, opr2 ];
+                return [ [ "add", opr1, opr2 ] ];
+        };
+
+        function add_imm(opr1, opr2) {
+            return [ undefined, opr1 + opr2 ];
         };
 
         var t = [
-            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: true, codegen: f },
-            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: true, codegen: f },
-            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: true, codegen: f },
+            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: true, codegen: add_reg },
+            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: true, codegen: add_reg },
+            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: true, codegen: add_reg },
+            { srcspec: [ "imm", "imm" ], dstspec: "imm", srcswap: true, codegen: add_imm },
             ];
 
         return generate_code(dst, opr1, opr2, t);
     }
 
     function generate_code_sub(dst, opcode, opr1, opr2) {
-        var f = function(opr1, opr2) {
+	function sub_reg(opr1, opr2) {
             if (opr2 == 0)
-                return [];
+                return [ [] ];
             else
-                return [ "sub", opr1, opr2 ];
+               return [ [ "sub", opr1, opr2 ] ];
+        };
+
+        function sub_imm(opr1, opr2) {
+            return [ undefined, opr1 - opr2 ];
         };
 
         var t = [
-            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: false, codegen: f },
-            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: false, codegen: f },
-            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: false, codegen: f },
+            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: false, codegen: sub_reg },
+            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: false, codegen: sub_reg },
+            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: false, codegen: sub_reg },
+            { srcspec: [ "imm", "imm" ], dstspec: "imm", srcswap: false, codegen: sub_imm },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1469,13 +1618,52 @@ function PLZ_ILX86(ilcode, _debug) {
 
     function generate_code_mul(dst, opcode, opr1, opr2) {
         // mul reg/mem -> edx:eax = eax * r/m
-        var f = function(opr1, opr2) {
-            return [ "mul", opr2 ];
+        function mul_reg1(opr1, opr2) {
+            Regs.iareg_destroy("edx");
+            return [ [ "imul", opr2 ] ];
+        };
+
+        function mul_reg2(opr1, opr2) {
+            return [ [ "imul", opr1, opr2 ] ];
+        };
+
+
+        function mul_imm(opr1, opr2) {
+            return [ undefined, opr1 * opr2 ];
         };
 
         var t = [
-            { srcspec: [ "eax", "reg" ], dstspec: "eax", srcswap: true, codegen: f },
-            { srcspec: [ "eax", "mem" ], dstspec: "eax", srcswap: true, codegen: f },
+            { srcspec: [ "eax", "reg" ], dstspec: "eax", srcswap: true, codegen: mul_reg1 },
+            { srcspec: [ "eax", "mem" ], dstspec: "eax", srcswap: true, codegen: mul_reg1 },
+
+            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
+            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
+            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
+
+            { srcspec: [ "imm", "imm" ], dstspec: "imm", srcswap: true, codegen: mul_imm },
+            ];
+
+        return generate_code(dst, opr1, opr2, t);
+    }
+
+    function generate_code_div(dst, opcode, opr1, opr2) {
+        // div reg/mem -> edx, eax = edx:eax / r/m
+        function div_reg(opr1, opr2) {
+            var rcode = [];
+            Regs.iareg_destroy("edx");
+            rcode.push([ "xor", "edx", "edx" ]);
+            rcode.push([ "idiv", opr2 ]);
+            return [ rcode ];
+        };
+
+        function div_imm(opr1, opr2) {
+            return [ undefined, parseInt(opr1 / opr2) ];
+        };
+
+        var t = [
+            { srcspec: [ "eax", "reg" ], dstspec: "eax", srcswap: false, codegen: div_reg },
+            { srcspec: [ "eax", "mem" ], dstspec: "eax", srcswap: false, codegen: div_reg },
+            { srcspec: [ "imm", "imm" ], dstspec: "imm", srcswap: false, codegen: div_imm },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1484,10 +1672,9 @@ function PLZ_ILX86(ilcode, _debug) {
     function generate_code_bne(dst, opcode, opr1, opr2) {
         var f = function(opr1, opr2) {
             var rcode = [];
-
             rcode.push([ "cmp", opr1, opr2 ]);
             rcode.push([ "jne", dst ]);
-            return rcode;
+            return [ rcode ];
         };
 
         var t = [
@@ -1503,10 +1690,9 @@ function PLZ_ILX86(ilcode, _debug) {
     function generate_code_bge(dst, opcode, opr1, opr2) {
         var f = function(opr1, opr2) {
             var rcode = [];
-
             rcode.push([ "cmp", opr1, opr2 ]);
             rcode.push([ "jae", dst ]);
-            return rcode;
+            return [ rcode ];
         };
 
         var t = [
@@ -1522,10 +1708,9 @@ function PLZ_ILX86(ilcode, _debug) {
     function generate_code_bgt(dst, opcode, opr1, opr2) {
         var f = function(opr1, opr2) {
             var rcode = [];
-
             rcode.push([ "cmp", opr1, opr2 ]);
             rcode.push([ "ja", dst ]);
-            return rcode;
+            return [ rcode ];
         };
 
         var t = [
@@ -1541,10 +1726,9 @@ function PLZ_ILX86(ilcode, _debug) {
     function generate_code_ble(dst, opcode, opr1, opr2) {
         var f = function(opr1, opr2) {
             var rcode = [];
-
             rcode.push([ "cmp", opr1, opr2 ]);
             rcode.push([ "jbe", dst ]);
-            return rcode;
+            return [ rcode ];
         };
 
         var t = [
@@ -1560,10 +1744,9 @@ function PLZ_ILX86(ilcode, _debug) {
     function generate_code_blt(dst, opcode, opr1, opr2) {
         var f = function(opr1, opr2) {
             var rcode = [];
-
             rcode.push([ "cmp", opr1, opr2 ]);
             rcode.push([ "jb", dst ]);
-            return rcode;
+            return [ rcode ];
         };
 
         var t = [
@@ -1578,7 +1761,7 @@ function PLZ_ILX86(ilcode, _debug) {
 
     function generate_code_jmp(dst, opcode, opr1, opr2) {
         var f = function(opr1, opr2) {
-            return [ "jmp", dst ];
+            return [ [ "jmp", dst ] ];
         };
 
         var t = [ { codegen: f } ];
@@ -1589,7 +1772,7 @@ function PLZ_ILX86(ilcode, _debug) {
     function generate_code_call(dst, opcode, opr1, opr2) {
         var f = function(opr1, opr2) {
             Regs.iareg_init();
-            return [ "call", dst ];
+            return [ [ "call", dst ] ];
         };
 
         var t = [ { codegen: f } ];
@@ -1599,7 +1782,11 @@ function PLZ_ILX86(ilcode, _debug) {
 
     function generate_code_ret(dst, opcode, opr1, opr2) {
         var f = function(opr1, opr2) {
-            return [ "ret" ];
+            var rcode = [];
+            rcode.push([ "mov", "esp", "ebp" ]);
+            rcode.push([ "pop", "ebp" ]);
+            rcode.push([ "ret" ]);
+            return [ rcode ];
         };
 
         var t = [ { codegen: f } ];
@@ -1621,11 +1808,13 @@ function PLZ_ILX86(ilcode, _debug) {
 
     var gencode_table = {
         "_label": generate_code_label,
+        "_frame": generate_code_frame,
         "_print": generate_code_print,
 
         "add": generate_code_add,
         "sub": generate_code_sub,
         "mul": generate_code_mul,
+        "div": generate_code_div,
 
         "bne": generate_code_bne,
         "bge": generate_code_bge,
@@ -1642,7 +1831,7 @@ function PLZ_ILX86(ilcode, _debug) {
         var i, f, opcode, dst, opr1, opr2, rcode = [];
 
         for (i = 0; i < ilcode.length; i++) {
-            if (_debug) {
+            if (debug) {
                 console.log("----");
                 console.log("IL = " + ilcode[i]);
             }
@@ -1656,10 +1845,9 @@ function PLZ_ILX86(ilcode, _debug) {
                 throw "unknown opcode: " + opcode;
 
             rcode = merge_code(rcode, f(dst, opcode, opr1, opr2));
-
-            console.log(">>> code <<<");
-            console.log(rcode);
         }
+
+	return rcode;
     }
 }
 
@@ -1676,9 +1864,34 @@ var il = plz.generate_il(ast);
 if (debug)
     il.dump();
 
-var ilx = new PLZ_ILX86(il, true);
-ilx.generate_code();
-
+var ilx = new CodeGenX86(il);
+var code = ilx.generate_code();
+if (debug)
+    console.log(code);
 
 // var ilvm = new PLZ_ILVM(il);
 // ilvm.run();
+
+function output_asm(code) {
+    var i, c, s;
+
+    console.log("section .text");
+    console.log("\tglobal _main");
+
+    for (i = 0; i < code.length; i++) {
+	c = code[i];
+	if (c[0] == "_label") {
+	    console.log(c[1] + ":");
+	} else {
+	    s = "\t" + c[0];
+	    if (c[1] != undefined)
+		s += "\t" + c[1];
+	    if (c[2] != undefined)
+		s += ", " + c[2];
+
+	    console.log(s);
+	}
+    }
+}
+
+output_asm(code);
