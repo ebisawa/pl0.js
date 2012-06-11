@@ -15,6 +15,8 @@
   factor = ident | number | "(" expression ")".
 */
 
+var WORDSIZE = 8;
+
 function PLZ() {
     function Syntax() {
         var IDENT = 1, NUMBER = 2, KEYWORD = 3;
@@ -894,7 +896,7 @@ function PLZ() {
 
                 root_env = new Environ("main", null, r, true);
                 code.push([ "_label", "_main" ]);
-                code.push([ "_frame", root_env.vars_count ]);
+                code.push([ "_frame_main", root_env.vars_count ]);
                 code = code.concat(codegen_block(root_env, ast));
 
                 for (i = 0; i < ast.procedures.length; i++) {
@@ -1055,14 +1057,14 @@ function CodeGenX86(ilcode) {
 
         function iareg_init() {
             iareg_status = {
-                "eax": { used: false }, "ebx": { used: false },
-                "ecx": { used: false }, "edx": { used: false },
-                "esi": { used: false }, "edi": { used: false },
+                "rax": { used: false }, "rbx": { used: false },
+                "rcx": { used: false }, "rdx": { used: false },
+                "rsi": { used: false }, "rdi": { used: false },
             };
         }
 
         function iareg_reserve(iareg) {
-            if (iareg_status[iareg].used)
+            if (iareg_status[iareg].used == true)
                 return false;
             else {
                 iareg_status[iareg].used = true;
@@ -1070,28 +1072,45 @@ function CodeGenX86(ilcode) {
             }
         }
 
-        function iareg_any() {
+        function iareg_find_free() {
             for (var key in iareg_status) {
                 if (iareg_status[key].used == false)
                     return key;
             }
-
-            throw "XXX noregs";
         }
 
-        function iareg_use(iareg) {
+        function iareg_any() {
+            var key;
+
+            for (key in iareg_status) {
+                if (iareg_status[key].used == false) {
+                    if (iareg_status[key].vreg != undefined)
+                        continue;
+
+                    return key;
+                }
+            }
+
+            if ((key = iareg_find_free()) != undefined)
+                return key;
+
+            throw "XXX no reg";
+        }
+
+        function iareg_use_reg(iareg, cgfunc) {
             var nreg;
 
             if (iareg == undefined)
-                throw "reg is undefined";
+                throw "iareg is undefined";
 
             if (iareg_reserve(iareg) == false) {
-                if ((nreg = iareg_any()) != undefined) {
+                if ((nreg = iareg_find_free()) != undefined) {
                     // move reg to other reg is available
                     iareg_reserve(nreg);
                     iareg_rename(nreg, iareg);
                     iareg_reserve(iareg);
-                    return [ "mov", nreg, iareg ];
+
+                    cgfunc([ "mov", nreg, iareg ]);
                 } else {
                     // all registers are used. push to swap...
                     throw "XXX no register";
@@ -1101,7 +1120,6 @@ function CodeGenX86(ilcode) {
 
         function iareg_rename(new_iareg, old_iareg) {
             iareg_status[new_iareg].vreg = iareg_status[old_iareg].vreg;
-            iareg_status[new_iareg].value = iareg_status[old_iareg].value;
             iareg_destroy(old_iareg);
         }
 
@@ -1114,16 +1132,11 @@ function CodeGenX86(ilcode) {
             if (iareg_status[iareg] != undefined) {
                 iareg_status[iareg].used = false;
                 delete iareg_status[iareg].vreg;
-                delete iareg_status[iareg].value;
             }
         }
 
         function iareg_assoc_vreg(iareg, vreg) {
             iareg_status[iareg].vreg = vreg;
-        }
-
-        function iareg_assoc_const(iareg, value) {
-            iareg_status[iareg].value = value;
         }
 
         function vreg_resolv_iareg(vreg) {
@@ -1133,39 +1146,16 @@ function CodeGenX86(ilcode) {
             }
         }
 
-        // XXX multi assoc
-        function vreg_resolv_number(vreg) {
-            for (var key in iareg_status) {
-                if (iareg_status[key].vreg == vreg)
-                    return iareg_status[key].value;
-            }
-        }
-
-        function vreg_assoc_const(vreg, value) {
-            for (var key in iareg_status) {
-                if (iareg_status[key].vreg == vreg) {
-                    if (value == null)
-                        delete iareg_status[key].value;
-                    else
-                        iareg_status[key].value = value;
-                }
-            }
-        }
-
         iareg_init();
 
         return {
         iareg_init: iareg_init,
         iareg_any: iareg_any,
-        iareg_use: iareg_use,
+        iareg_use_reg: iareg_use_reg,
         iareg_release: iareg_release,
         iareg_destroy: iareg_destroy,
         iareg_assoc_vreg: iareg_assoc_vreg,
-        iareg_assoc_const: iareg_assoc_const,
-
-        vreg_resolv_number: vreg_resolv_number,
         vreg_resolv_iareg: vreg_resolv_iareg,
-        vreg_assoc_const: vreg_assoc_const,
 
         showtable: function() {
                 console.log(iareg_status);
@@ -1176,35 +1166,35 @@ function CodeGenX86(ilcode) {
     function Operands(dst, opr1, opr2, opspec) {
         var opcost = {
             "gr": {
-                "eax": { cost: 12 },
+                "rax": { cost: 12,     gencode: generate_opr_gr_rax },
                 "reg": { cost: 11,     gencode: generate_opr_gr_reg },
-                "mem": { cost: 10,     gencode: generate_opr_gr_mem },
+                "mem": { cost: 20,     gencode: generate_opr_gr_mem },
                 "imm": { cost: undefined },
             },
 
             "lr": {
-                "eax": { cost: 12 },
+                "rax": { cost: 12,     gencode: generate_opr_lr_rax },
                 "reg": { cost: 11,     gencode: generate_opr_lr_reg },
-                "mem": { cost: 10,     gencode: generate_opr_lr_mem },
+                "mem": { cost: 20,     gencode: generate_opr_lr_mem },
                 "imm": { cost: undefined },
             },
 
             "tr": {
-                "eax": { cost: 1,      gencode: generate_opr_tr_eax },
+                "rax": { cost: 1,      gencode: generate_opr_tr_rax },
                 "reg": { cost: 0,      gencode: generate_opr_tr_reg },
                 "mem": { cost: undefined },
                 "imm": { cost: undefined },
             },
 
-            "eax": {
-                "eax": { cost: 0,      gencode: generate_opr_tr_reg },
+            "rax": {
+                "rax": { cost: 0,      gencode: generate_opr_tr_reg },
                 "reg": { cost: 1,      gencode: generate_opr_tr_reg },
                 "mem": { cost: undefined },
                 "imm": { cost: undefined },
             },
 
             "number": {
-                "eax": { cost: 2,      gencode: generate_opr_num_eax },
+                "rax": { cost: 2,      gencode: generate_opr_num_rax },
                 "reg": { cost: 1,      gencode: generate_opr_num_reg },
                 "mem": { cost: undefined },
                 "imm": { cost: 0,      gencode: generate_opr_num_imm },
@@ -1212,10 +1202,10 @@ function CodeGenX86(ilcode) {
         };
 
         var epitab = {
-            "eax": {
-                "gr": generate_epi_eax_gr,
-                "lr": generate_epi_eax_lr,
-                "tr": generate_epi_eax_tr,
+            "rax": {
+                "gr": generate_epi_rax_gr,
+                "lr": generate_epi_rax_lr,
+                "tr": generate_epi_rax_tr,
             },
 
             "reg": {
@@ -1233,7 +1223,26 @@ function CodeGenX86(ilcode) {
 
         function lraddr(lreg) {
             var n = parseInt(lreg.substr(2));
-            return "[ebp-" + (n + 1) * 4 + "]";
+            return "[rbp-" + (n + 1) * WORDSIZE + "]";
+        }
+
+        function graddr(greg) {
+            var n = parseInt(greg.substr(2));
+            return "[r15-" + (n + 1) * WORDSIZE + "]";
+        }
+
+        function generate_opr_gr_rax(opr) {
+            var rcode = [];
+
+            if ((reg = Regs.vreg_resolv_iareg(opr)) != "rax") {
+                Regs.iareg_use_reg("rax", function(code) { rcode.push(code); });
+
+                rcode.push([ "mov", "rax", graddr(opr) ]);
+
+                Regs.iareg_assoc_vreg("rax", opr);
+            }
+
+            return [ rcode, reg ];
         }
 
         function generate_opr_gr_reg(opr) {
@@ -1241,17 +1250,32 @@ function CodeGenX86(ilcode) {
 
             if ((reg = Regs.vreg_resolv_iareg(opr)) == undefined) {
                 reg = Regs.iareg_any();
-                rcode = merge_code(rcode, Regs.iareg_use(reg));
-                rcode.push([ "mov", reg, "[" + opr + "]" ]);
+                Regs.iareg_use_reg(reg, function(code) { rcode.push(code); });
+
+                rcode.push([ "mov", reg, graddr(opr) ]);
+
                 Regs.iareg_assoc_vreg(reg, opr);
-                Regs.iareg_assoc_const(reg, null);
             }
 
             return [ rcode, reg ];
         }
 
         function generate_opr_gr_mem(opr) {
-            return [ undefined, "dword ptr [" + opr + "]" ];
+            return [ undefined, "qword " + graddr(opr) ];
+        }
+
+        function generate_opr_lr_rax(opr) {
+            var rcode = [];
+
+            if ((reg = Regs.vreg_resolv_iareg(opr)) != "rax") {
+                Regs.iareg_use_reg("rax", function(code) { rcode.push(code); });
+
+                rcode.push([ "mov", "rax", lraddr(opr) ]);
+
+                Regs.iareg_assoc_vreg("rax", opr);
+            }
+
+            return [ rcode, reg ];
         }
 
         function generate_opr_lr_reg(opr) {
@@ -1259,27 +1283,29 @@ function CodeGenX86(ilcode) {
 
             if ((reg = Regs.vreg_resolv_iareg(opr)) == undefined) {
                 reg = Regs.iareg_any();
-                rcode = merge_code(rcode, Regs.iareg_use(reg));
+                Regs.iareg_use_reg(reg, function(code) { rcode.push(code); });
+
                 rcode.push([ "mov", reg, lraddr(opr) ]);
+
                 Regs.iareg_assoc_vreg(reg, opr);
-                Regs.iareg_assoc_const(reg, null);
             }
 
             return [ rcode, reg ];
         }
 
         function generate_opr_lr_mem(opr) {
-            return [ undefined, "dword ptr " + lraddr(opr) ];
+            return [ undefined, "qword " + lraddr(opr) ];
         }
 
-        function generate_opr_tr_eax(opr) {
+        function generate_opr_tr_rax(opr) {
             var rcode = [];
 
-            if ((reg = Regs.vreg_resolv_iareg(opr)) != "eax") {
-                rcode = merge_code(rcode, Regs.iareg_use("eax"));
-                rcode.push([ "mov", "eax", reg ]);
-                Regs.iareg_assoc_vreg("eax", opr);
-                Regs.iareg_assoc_const("eax", null);
+            if ((reg = Regs.vreg_resolv_iareg(opr)) != "rax") {
+                Regs.iareg_use_reg("rax", function(code) { rcode.push(code); });
+
+                rcode.push([ "mov", "rax", reg ]);
+
+                Regs.iareg_assoc_vreg("rax", opr);
             }
 
             return [ rcode, reg ];
@@ -1289,32 +1315,30 @@ function CodeGenX86(ilcode) {
             var reg, rcode = [];
 
             if ((reg = Regs.vreg_resolv_iareg(opr)) == undefined) {
-                reg = Regs.iareg_any();
-                rcode = merge_code(rcode, Regs.iareg_use(reg));
-                Regs.iareg_assoc_vreg(reg, opr);
-                Regs.iareg_assoc_const(reg, null);
+                Regs.showtable();
+                throw "no tr reg";
             }
 
             return [ rcode, reg ];
         }
 
-        function generate_opr_num_eax(opr) {
+        function generate_opr_num_rax(opr) {
             var rcode = [];
 
-            rcode = merge_code(rcode, Regs.iareg_use("eax"));
-            rcode.push([ "mov", "eax", opr ]);
-            Regs.iareg_assoc_const("eax", opr);
+            Regs.iareg_use_reg("rax", function(code) { rcode.push(code); });
 
-            return [ rcode, "eax" ];
+            rcode.push([ "mov", "rax", opr ]);
+
+            return [ rcode, "rax" ];
         }
 
         function generate_opr_num_reg(opr) {
             var rcode = [];
             var reg = Regs.iareg_any();
 
-            rcode = merge_code(rcode, Regs.iareg_use(reg));
+            Regs.iareg_use_reg(reg, function(code) { rcode.push(code); });
+
             rcode.push([ "mov", reg, opr ]);
-            Regs.iareg_assoc_const(reg, opr);
 
             return [ rcode, reg ];
         }
@@ -1324,39 +1348,38 @@ function CodeGenX86(ilcode) {
         }
 
         ///////
-        function generate_epi_eax_gr(dst, opr1) {
+        function generate_epi_rax_gr(dst, opr1) {
             var rcode = [];
 
-            rcode.push([ "mov", "[" + dst + "]", "eax" ]);
-            Regs.iareg_assoc_vreg("eax", dst);
-            Regs.vreg_assoc_const(dst, null);
+            rcode.push([ "mov", graddr(dst), "rax" ]);
+
+            Regs.iareg_assoc_vreg("rax", dst);
 
             return rcode;
         }
 
-        function generate_epi_eax_lr(dst, opr1) {
+        function generate_epi_rax_lr(dst, opr1) {
             var rcode = [];
 
-            rcode.push([ "mov", lraddr(dst), "eax" ]);
-            Regs.iareg_assoc_vreg("eax", dst);
-            Regs.vreg_assoc_const(dst, null);
+            rcode.push([ "mov", lraddr(dst), "rax" ]);
+
+            Regs.iareg_assoc_vreg("rax", dst);
 
             return rcode;
         }
 
-        function generate_epi_eax_tr(dst, opr1) {
-            Regs.iareg_assoc_vreg("eax", dst);
-            Regs.vreg_assoc_const(dst, null);
+        function generate_epi_rax_tr(dst, opr1) {
+            Regs.iareg_assoc_vreg("rax", dst);
             return [];
         }
 
         function generate_epi_reg_gr(dst, opr1) {
             var rcode = [];
 
-            rcode.push([ "mov", "[" + dst + "]", opr1 ]);
+            rcode.push([ "mov", graddr(dst), opr1 ]);
+
             Regs.iareg_assoc_vreg(opr1, dst);
             Regs.iareg_release(opr1);
-            Regs.vreg_assoc_const(dst, null);
 
             return rcode;
         }
@@ -1365,26 +1388,23 @@ function CodeGenX86(ilcode) {
             var rcode = [];
 
             rcode.push([ "mov", lraddr(dst), opr1 ]);
+
             Regs.iareg_assoc_vreg(opr1, dst);
             Regs.iareg_release(opr1);
-            Regs.vreg_assoc_const(dst, null);
 
             return rcode;
         }
 
         function generate_epi_reg_tr(dst, opr1) {
             Regs.iareg_assoc_vreg(opr1, dst);
-            Regs.vreg_assoc_const(dst, null);
             return [];
         }
 
         function generate_epi_imm_gr(dst, opr1) {
-            Regs.vreg_assoc_const(dst, opr1);
-            return [ "mov", "dword ptr [" + dst + "]", opr1 ];
+            return [ "mov", "qword " + graddr(dst), opr1 ];
         }
 
         function generate_epi_imm_lr(dst, opr1) {
-            Regs.vreg_assoc_const(dst, opr1);
             return [ "mov", lraddr(dst), opr1 ];
         }
 
@@ -1392,7 +1412,8 @@ function CodeGenX86(ilcode) {
             var rcode = [];
             var reg = Regs.iareg_any();
 
-            rcode = merge_code(rcode, Regs.iareg_use(reg));
+            Regs.iareg_use_reg(reg, function(code) { rcode.push(code); });
+
             rcode.push([ "mov", reg, opr1 ]);
 
             // opr1 -> imm
@@ -1400,7 +1421,6 @@ function CodeGenX86(ilcode) {
             // dst  -> treg
 
             Regs.iareg_assoc_vreg(reg, dst);
-            Regs.vreg_assoc_const(dst, opr1);
 
             return rcode;
         }
@@ -1412,7 +1432,7 @@ function CodeGenX86(ilcode) {
             if (debug)
                 console.log("generate_opr: " + t + " -> " + target);
             if (opcost[t][target].gencode == undefined)
-                throw "unsuppotyed operand";
+                throw "unsuppoted operand";
 
             return opcost[t][target].gencode(opr);
         }
@@ -1427,7 +1447,7 @@ function CodeGenX86(ilcode) {
             if (opr.match(/^lr/))
                 return "lr";
             if (opr.match(/^tr/))
-                return (Regs.vreg_resolv_iareg(opr) == "eax") ? "eax" : "tr";
+                return (Regs.vreg_resolv_iareg(opr) == "rax") ? "rax" : "tr";
 
             throw "unknown operand type: " + opr;
         }
@@ -1546,19 +1566,30 @@ function CodeGenX86(ilcode) {
     function generate_code_frame(dst, opcode, opr1, opr2) {
         var rcode = [];
 
-        rcode.push([ 'push', 'ebp' ]);
-        rcode.push([ 'mov', 'ebp', 'esp' ]);
-        rcode.push([ 'sub', 'esp', dst * 4 ]);
+        rcode.push([ 'push', 'rbp' ]);
+        rcode.push([ 'mov', 'rbp', 'rsp' ]);
+        rcode.push([ 'sub', 'rsp', dst * WORDSIZE ]);
+        return rcode;
+    }
+
+    function generate_code_frame_main(dst, opcode, opr1, opr2) {
+        var rcode = [];
+
+        rcode.push([ 'push', 'rbp' ]);
+        rcode.push([ 'mov', 'rbp', 'rsp' ]);
+        rcode.push([ 'sub', 'rsp', dst * WORDSIZE ]);
+        rcode.push([ 'mov', 'r15', 'rbp' ]);
         return rcode;
     }
 
     function generate_code_print(dst, opcode, opr1, opr2) {
+/*
         var f = function(opr1, opr2) {
             var rcode = [];
 
             rcode.push([ "push", opr1 ]);
             rcode.push([ "call", "_print" ]);
-            rcode.push([ "add", "esp", 4 ]);
+            rcode.push([ "add", "rsp", 8 ]);
 
             Regs.iareg_init();
             return [ rcode ];
@@ -1568,6 +1599,20 @@ function CodeGenX86(ilcode) {
             { srcspec: [ "mem", "imm" ], srcswap: false, codegen: f },
             { srcspec: [ "reg", "imm" ], srcswap: false, codegen: f },
             ];
+*/
+
+
+        var f = function(opr1, opr2) {
+            var rcode = [];
+            rcode.push([ "call", "_print" ]);
+            Regs.iareg_init();
+            return [ rcode ];
+        };
+
+        var t = [
+            { srcspec: [ "rax", "imm" ], srcswap: false, codegen: f },
+            ];
+
 
         return generate_code(dst, opr1, opr2, t);
     }
@@ -1617,7 +1662,7 @@ function CodeGenX86(ilcode) {
     }
 
     function generate_code_mul(dst, opcode, opr1, opr2) {
-        // mul reg/mem -> edx:eax = eax * r/m
+        // mul reg/mem -> edx:rax = rax * r/m
         function mul_reg1(opr1, opr2) {
             Regs.iareg_destroy("edx");
             return [ [ "imul", opr2 ] ];
@@ -1633,12 +1678,12 @@ function CodeGenX86(ilcode) {
         };
 
         var t = [
-            { srcspec: [ "eax", "reg" ], dstspec: "eax", srcswap: true, codegen: mul_reg1 },
-            { srcspec: [ "eax", "mem" ], dstspec: "eax", srcswap: true, codegen: mul_reg1 },
+            { srcspec: [ "rax", "reg" ], dstspec: "rax", srcswap: true, codegen: mul_reg1 },
+            { srcspec: [ "rax", "mem" ], dstspec: "rax", srcswap: true, codegen: mul_reg1 },
 
-            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
-            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
-            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
+//            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
+//            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
+//            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
 
             { srcspec: [ "imm", "imm" ], dstspec: "imm", srcswap: true, codegen: mul_imm },
             ];
@@ -1647,7 +1692,7 @@ function CodeGenX86(ilcode) {
     }
 
     function generate_code_div(dst, opcode, opr1, opr2) {
-        // div reg/mem -> edx, eax = edx:eax / r/m
+        // div reg/mem -> edx, rax = edx:rax / r/m
         function div_reg(opr1, opr2) {
             var rcode = [];
             Regs.iareg_destroy("edx");
@@ -1661,8 +1706,8 @@ function CodeGenX86(ilcode) {
         };
 
         var t = [
-            { srcspec: [ "eax", "reg" ], dstspec: "eax", srcswap: false, codegen: div_reg },
-            { srcspec: [ "eax", "mem" ], dstspec: "eax", srcswap: false, codegen: div_reg },
+            { srcspec: [ "rax", "reg" ], dstspec: "rax", srcswap: false, codegen: div_reg },
+            { srcspec: [ "rax", "mem" ], dstspec: "rax", srcswap: false, codegen: div_reg },
             { srcspec: [ "imm", "imm" ], dstspec: "imm", srcswap: false, codegen: div_imm },
             ];
 
@@ -1783,8 +1828,8 @@ function CodeGenX86(ilcode) {
     function generate_code_ret(dst, opcode, opr1, opr2) {
         var f = function(opr1, opr2) {
             var rcode = [];
-            rcode.push([ "mov", "esp", "ebp" ]);
-            rcode.push([ "pop", "ebp" ]);
+            rcode.push([ "mov", "rsp", "rbp" ]);
+            rcode.push([ "pop", "rbp" ]);
             rcode.push([ "ret" ]);
             return [ rcode ];
         };
@@ -1809,6 +1854,7 @@ function CodeGenX86(ilcode) {
     var gencode_table = {
         "_label": generate_code_label,
         "_frame": generate_code_frame,
+        "_frame_main": generate_code_frame_main,
         "_print": generate_code_print,
 
         "add": generate_code_add,
@@ -1872,26 +1918,62 @@ if (debug)
 // var ilvm = new PLZ_ILVM(il);
 // ilvm.run();
 
+
+function output_asmlib_mac64() {
+    console.log("_print:");
+    console.log("	push	rbp");
+    console.log("	mov	rbp, rsp");
+    console.log("	sub	rsp, 24");
+    console.log("	mov	byte [rbp - 8], 0x0a	; newline");
+    console.log("; integer to string");
+    console.log("	lea	r8, [rbp - 24]		; R8 = string buffer");
+    console.log("	lea	rsi, [r8 + 16]		; RSI = end of buffer");
+    console.log("	mov	ecx, 10");
+    console.log("_print_itos_loop:");
+    console.log("	sub	rsi, 1");
+    console.log("	xor	edx, edx");
+    console.log("	div	rcx");
+    console.log("	add	dl, '0'");
+    console.log("	mov	[rsi], dl");
+    console.log("	cmp	rax, 0");
+    console.log("	je	_print_write");
+    console.log("	cmp	rsi, r8");
+    console.log("	jne	_print_itos_loop");
+    console.log("_print_write:");
+    console.log("	; RSI = start of valid buffer");
+    console.log("	; length = 17 - (RSI - R8)");
+    console.log("	lea	rdx, [r8 + 17]");
+    console.log("	sub	rdx, rsi");
+    console.log("	mov	eax, 0x2000004");
+    console.log("	mov	edi, 1");
+    console.log("	syscall");
+    console.log("	mov	rsp, rbp");
+    console.log("	pop rbp");
+    console.log("	ret");
+}
+
 function output_asm(code) {
     var i, c, s;
 
+    console.log("default rel");
     console.log("section .text");
     console.log("\tglobal _main");
 
     for (i = 0; i < code.length; i++) {
-	c = code[i];
-	if (c[0] == "_label") {
-	    console.log(c[1] + ":");
-	} else {
-	    s = "\t" + c[0];
-	    if (c[1] != undefined)
-		s += "\t" + c[1];
-	    if (c[2] != undefined)
-		s += ", " + c[2];
+        c = code[i];
+        if (c[0] == "_label") {
+            console.log(c[1] + ":");
+        } else {
+            s = "\t" + c[0];
+            if (c[1] != undefined)
+                s += "\t" + c[1];
+            if (c[2] != undefined)
+                s += ", " + c[2];
 
-	    console.log(s);
-	}
+            console.log(s);
+        }
     }
 }
 
 output_asm(code);
+output_asmlib_mac64();
