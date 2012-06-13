@@ -773,7 +773,7 @@ function PLZ() {
                 break;
 
             default:
-                throw "unknown opcode";
+                throw "unknown opcode: " + stmt;
             }
 
             return rcode;
@@ -931,7 +931,10 @@ function PLZ() {
 }
 
 function PLZ_ILVM(code, ilvm_debug) {
-    var regs = [], stack = [];
+    var regs = {}, pcstack = [], lstack = [];
+
+    if (debug)
+        ilvm_debug = 1;
 
     function make_labelmap(code) {
         var i, lmap = {};
@@ -947,8 +950,8 @@ function PLZ_ILVM(code, ilvm_debug) {
     function loadopr(operand) {
         var r;
 
-        if (typeof operand == "string" && operand[0] == "r") {
-            if ((r = regs[Number(operand.slice(1))]) == undefined)
+        if (typeof operand == "string") {
+            if ((r = regs[operand]) == undefined)
                 r = 0;
         } else {
             r = operand;  // Number(operand);
@@ -958,16 +961,33 @@ function PLZ_ILVM(code, ilvm_debug) {
     }
 
     function writeback(dst, value) {
-        if (dst[0] != "r")
-            throw "dst is not a register";
-
-        regs[Number(dst.slice(1))] = value;
+        regs[dst] = value;
 
         if (ilvm_debug) {
             console.log("\nregs =");
             console.log(regs);
             console.log("");
         }
+    }
+
+    function push_localregs() {
+        var key, pr = {};
+
+        for (key in regs) {
+            if (key.match(/^lr/)) {
+                pr[key] = regs[key];
+                regs[key] = 0;
+            }
+        }
+
+        lstack.push(pr);
+    }
+
+    function pop_localregs() {
+        var key, pr = lstack.pop();
+
+        for (key in pr)
+            regs[key] = pr[key];
     }
 
     this.run = function() {
@@ -985,6 +1005,10 @@ function PLZ_ILVM(code, ilvm_debug) {
 
             switch (opcode) {
             case "_label":
+                break;  // nop
+
+            case "_frame":
+            case "_frame_main":
                 break;  // nop
 
             case "add":
@@ -1025,33 +1049,29 @@ function PLZ_ILVM(code, ilvm_debug) {
                 break;
 
             case "call":
-                stack.push(pc);
+                pcstack.push(pc);
+                push_localregs();
                 pc = labelmap[dst];
                 break;
             case "ret":
-                pc = stack.pop();
+                pop_localregs();
+                pc = pcstack.pop();
                 if (pc == undefined)
                     return;
                 break;
 
-            case "push":
-                stack.push(loadopr(dst));
-                break;
-            case "pop":
-                writeback(dst, stack.pop());
-                break;
             case "_print":
-                console.log(loadopr(dst));
+                console.log(loadopr(opr1));
                 break;
 
             default:
-                throw "unknown opcode";
+                throw "unknown opcode: " + opcode;
             }
         }
     }
 }
 
-function CodeGenX86(ilcode) {
+function CodeGenAmd64(ilcode) {
     var Regs = function() {
         var iareg_status = {};
 
@@ -1223,12 +1243,12 @@ function CodeGenX86(ilcode) {
 
         function lraddr(lreg) {
             var n = parseInt(lreg.substr(2));
-            return "[rbp-" + (n + 1) * WORDSIZE + "]";
+            return "[rbp - " + (n + 1) * WORDSIZE + "]";
         }
 
         function graddr(greg) {
             var n = parseInt(greg.substr(2));
-            return "[r15-" + (n + 1) * WORDSIZE + "]";
+            return "[r15 - " + (n + 1) * WORDSIZE + "]";
         }
 
         function generate_opr_gr_rax(opr) {
@@ -1583,25 +1603,6 @@ function CodeGenX86(ilcode) {
     }
 
     function generate_code_print(dst, opcode, opr1, opr2) {
-/*
-        var f = function(opr1, opr2) {
-            var rcode = [];
-
-            rcode.push([ "push", opr1 ]);
-            rcode.push([ "call", "_print" ]);
-            rcode.push([ "add", "rsp", 8 ]);
-
-            Regs.iareg_init();
-            return [ rcode ];
-        };
-
-        var t = [
-            { srcspec: [ "mem", "imm" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "imm" ], srcswap: false, codegen: f },
-            ];
-*/
-
-
         var f = function(opr1, opr2) {
             var rcode = [];
             rcode.push([ "call", "_print" ]);
@@ -1612,7 +1613,6 @@ function CodeGenX86(ilcode) {
         var t = [
             { srcspec: [ "rax", "imm" ], srcswap: false, codegen: f },
             ];
-
 
         return generate_code(dst, opr1, opr2, t);
     }
@@ -1664,7 +1664,7 @@ function CodeGenX86(ilcode) {
     function generate_code_mul(dst, opcode, opr1, opr2) {
         // mul reg/mem -> edx:rax = rax * r/m
         function mul_reg1(opr1, opr2) {
-            Regs.iareg_destroy("edx");
+            Regs.iareg_destroy("rdx");
             return [ [ "imul", opr2 ] ];
         };
 
@@ -1695,7 +1695,7 @@ function CodeGenX86(ilcode) {
         // div reg/mem -> edx, rax = edx:rax / r/m
         function div_reg(opr1, opr2) {
             var rcode = [];
-            Regs.iareg_destroy("edx");
+            Regs.iareg_destroy("rdx");
             rcode.push([ "xor", "edx", "edx" ]);
             rcode.push([ "idiv", opr2 ]);
             return [ rcode ];
@@ -1873,6 +1873,62 @@ function CodeGenX86(ilcode) {
         "ret": generate_code_ret
     };
 
+    function output_nasm(code) {
+        var i, c, s;
+
+        console.log("default rel");
+        console.log("section .text");
+        console.log("\tglobal _main");
+
+        for (i = 0; i < code.length; i++) {
+            c = code[i];
+            if (c[0] == "_label") {
+                console.log(c[1] + ":");
+            } else {
+                s = "\t" + c[0];
+                if (c[1] != undefined)
+                    s += "\t" + c[1];
+                if (c[2] != undefined)
+                    s += ", " + c[2];
+
+                console.log(s);
+            }
+        }
+    }
+
+    function output_sysdep_mac64() {
+        console.log("_print:");
+        console.log("	push	rbp");
+        console.log("	mov	rbp, rsp");
+        console.log("	sub	rsp, 24");
+        console.log("	mov	byte [rbp - 8], 0x0a	; newline");
+        console.log("__print_itos:");
+        console.log("	lea	r8, [rbp - 24]		; R8 = string buffer");
+        console.log("	lea	rsi, [r8 + 16]		; RSI = end of buffer");
+        console.log("	mov	ecx, 10");
+        console.log("__print_itos_loop:");
+        console.log("	sub	rsi, 1");
+        console.log("	xor	edx, edx");
+        console.log("	div	rcx");
+        console.log("	add	dl, '0'");
+        console.log("	mov	[rsi], dl");
+        console.log("	cmp	rax, 0");
+        console.log("	je	__print_write");
+        console.log("	cmp	rsi, r8");
+        console.log("	jne	__print_itos_loop");
+        console.log("__print_write:");
+        console.log("	; RSI = start of valid buffer");
+        console.log("	; len = 17 - (RSI - R8)");
+        console.log("	lea	rdx, [r8 + 17]");
+        console.log("	sub	rdx, rsi");
+        console.log("	mov	eax, 0x2000004");
+        console.log("	mov	edi, 1");
+        console.log("	syscall");
+        console.log("	mov	rsp, rbp");
+        console.log("	pop rbp");
+        console.log("	ret");
+    }
+
     this.generate_code = function() {
         var i, f, opcode, dst, opr1, opr2, rcode = [];
 
@@ -1893,7 +1949,12 @@ function CodeGenX86(ilcode) {
             rcode = merge_code(rcode, f(dst, opcode, opr1, opr2));
         }
 
-	return rcode;
+        rcode.print = function() {
+            output_nasm(code);
+            output_sysdep_mac64();
+        }
+
+        return rcode;
     }
 }
 
@@ -1910,70 +1971,12 @@ var il = plz.generate_il(ast);
 if (debug)
     il.dump();
 
-var ilx = new CodeGenX86(il);
+var ilx = new CodeGenAmd64(il);
 var code = ilx.generate_code();
 if (debug)
     console.log(code);
 
-// var ilvm = new PLZ_ILVM(il);
-// ilvm.run();
+code.print();
 
-
-function output_asmlib_mac64() {
-    console.log("_print:");
-    console.log("	push	rbp");
-    console.log("	mov	rbp, rsp");
-    console.log("	sub	rsp, 24");
-    console.log("	mov	byte [rbp - 8], 0x0a	; newline");
-    console.log("; integer to string");
-    console.log("	lea	r8, [rbp - 24]		; R8 = string buffer");
-    console.log("	lea	rsi, [r8 + 16]		; RSI = end of buffer");
-    console.log("	mov	ecx, 10");
-    console.log("_print_itos_loop:");
-    console.log("	sub	rsi, 1");
-    console.log("	xor	edx, edx");
-    console.log("	div	rcx");
-    console.log("	add	dl, '0'");
-    console.log("	mov	[rsi], dl");
-    console.log("	cmp	rax, 0");
-    console.log("	je	_print_write");
-    console.log("	cmp	rsi, r8");
-    console.log("	jne	_print_itos_loop");
-    console.log("_print_write:");
-    console.log("	; RSI = start of valid buffer");
-    console.log("	; length = 17 - (RSI - R8)");
-    console.log("	lea	rdx, [r8 + 17]");
-    console.log("	sub	rdx, rsi");
-    console.log("	mov	eax, 0x2000004");
-    console.log("	mov	edi, 1");
-    console.log("	syscall");
-    console.log("	mov	rsp, rbp");
-    console.log("	pop rbp");
-    console.log("	ret");
-}
-
-function output_asm(code) {
-    var i, c, s;
-
-    console.log("default rel");
-    console.log("section .text");
-    console.log("\tglobal _main");
-
-    for (i = 0; i < code.length; i++) {
-        c = code[i];
-        if (c[0] == "_label") {
-            console.log(c[1] + ":");
-        } else {
-            s = "\t" + c[0];
-            if (c[1] != undefined)
-                s += "\t" + c[1];
-            if (c[2] != undefined)
-                s += ", " + c[2];
-
-            console.log(s);
-        }
-    }
-}
-
-output_asm(code);
-output_asmlib_mac64();
+//var ilvm = new PLZ_ILVM(il);
+//ilvm.run();
