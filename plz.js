@@ -90,12 +90,16 @@ function PLZ() {
                 return { ntype: "procedure", name: name, block: block };
             }
 
-            function NodeIdent(token) {
-                return { ntype: "ident", value: token.string };
+            function NodeIdent(name) {
+                return { ntype: "ident", value: name };
             }
 
             function NodeNumber(value) {
-                return { ntype: "number", value: Number(token.string) };
+                return { ntype: "number", value: Number(value) };
+            }
+
+            function NodeConst(name, value) {
+                return { ntype: "const", name: name.string, value: Number(value) };
             }
 
             function NodeOperation(op, value1, value2) {
@@ -123,6 +127,14 @@ function PLZ() {
             }
 
             function dump_node(indent, ast) {
+                function dump_assign(indent, stmt) {
+                    console.log(indent + "+ [assign]");
+                    console.log(indent + "  - lvalue");
+                    dump_node(indent + "    ", stmt.lvalue);
+                    console.log(indent + "  - rnode");
+                    dump_node(indent + "    ", stmt.rnode);
+                }
+
                 function dump_block(indent, block) {
                     var v, i;
 
@@ -161,11 +173,12 @@ function PLZ() {
                     }
                 }
 
-                function dump_procedure(indent, proc) {
-                    console.log(indent + "+ [procedure]");
-                    console.log(indent + "  - name: " + proc.name);
-                    console.log(indent + "  - block");
-                    dump_node(indent + "    ", proc.block);
+                function dump_call(ident, call) {
+                    console.log(indent + "+ [call] " + call.callee);
+                }
+
+                function dump_const(ident, cons) {
+                    console.log(indent + "+ [const] " + cons.name + " = " + cons.value);
                 }
 
                 function dump_if(indent, ifo) {
@@ -180,6 +193,10 @@ function PLZ() {
                     }
                 }
 
+                function dump_ident(indent, value) {
+                    console.log(indent + "+ [ident] " + value.value);
+                }
+
                 function dump_loop(ident, loop) {
                     console.log(indent + "+ [loop]");
                     console.log(indent + "  - condition");
@@ -192,43 +209,41 @@ function PLZ() {
                     }
                 }
 
-                function dump_call(ident, call) {
-                    console.log(indent + "+ [call] " + call.callee);
+                function dump_number(indent, value) {
+                    console.log(indent + "+ [number] " + value.value);
+                }
+
+                function dump_operation(indent, stmt) {
+                    console.log(indent + "+ [operation]");
+                    console.log(indent + "  - opcode: " + stmt.opcode);
+
+                    if (stmt.value1) {
+                        console.log(indent + "  - value1");
+                        dump_node(indent + "    ", stmt.value1);
+                    }
+
+                    if (stmt.value2) {
+                        console.log(indent + "  - value2");
+                        dump_node(indent + "    ", stmt.value2);
+                    }
                 }
 
                 function dump_print(ident, print) {
                     console.log(indent + "+ [print] " + print.value);
                 }
 
-                function dump_assign(indent, stmt) {
-                    console.log(indent + "+ [assign]");
-                    console.log(indent + "  - lvalue");
-                    dump_node(indent + "    ", stmt.lvalue);
-                    console.log(indent + "  - rnode");
-                    dump_node(indent + "    ", stmt.rnode);
-                }
-
-                function dump_operation(indent, stmt) {
-                    console.log(indent + "+ [operation]");
-                    console.log(indent + "  - opcode: " + stmt.opcode);
-                    console.log(indent + "  - value1");
-                    dump_node(indent + "    ", stmt.value1);
-                    console.log(indent + "  - value2");
-                    dump_node(indent + "    ", stmt.value2);
-                }
-
-                function dump_ident(indent, value) {
-                    console.log(indent + "+ [ident] " + value.value);
-                }
-
-                function dump_number(indent, value) {
-                    console.log(indent + "+ [number] " + value.value);
+                function dump_procedure(indent, proc) {
+                    console.log(indent + "+ [procedure]");
+                    console.log(indent + "  - name: " + proc.name);
+                    console.log(indent + "  - block");
+                    dump_node(indent + "    ", proc.block);
                 }
 
                 switch (ast.ntype) {
                 case "assign":     dump_assign(indent, ast);       break;
                 case "block":      dump_block(indent, ast);        break;
                 case "call":       dump_call(indent, ast);         break;
+                case "const":      dump_const(indent, ast);        break;
                 case "ident":      dump_ident(indent, ast);        break;
                 case "if":         dump_if(indent, ast);           break;
                 case "loop":       dump_loop(indent, ast);         break;
@@ -289,12 +304,31 @@ function PLZ() {
                 return NodeBlock(c, v, p, s);
             }
 
+            // [ "const" ident "=" number {"," ident "=" number} ";"]
             function block_const() {
-                console.log("warning: block_const() has not implemeted yet");
-                return [];
+                var v, l, consts = [];
+
+                if (debug)
+                    console.log("-- parser: block_const --");
+
+                for (;;) {
+                    v = getnext_t(IDENT);
+                    check_next_keyword("=");
+                    l = getnext_t(NUMBER);
+
+                    consts.push(NodeConst(v, l.string));
+                    v = lexer.getnext();
+
+                    if (v.is_keyword(","))
+                        continue;
+                    else if (v.is_keyword(";"))
+                        return consts;
+                    else
+                        error_unexpected(token);
+                }
             }
 
-            //         [ "var" ident {"," ident} ";"]
+            // [ "var" ident {"," ident} ";"]
             function block_var() {
                 var token, vars = [];
 
@@ -302,11 +336,8 @@ function PLZ() {
                     console.log("-- parser: block_var --");
 
                 for (;;) {
-                    token = lexer.getnext();
-                    if (token.type != IDENT)
-                        error_unexpected(token);
-
-                    vars.push(NodeIdent(token));
+                    token = getnext_t(IDENT);
+                    vars.push(NodeIdent(token.string));
                     token = lexer.getnext();
 
                     if (token.is_keyword(","))
@@ -318,17 +349,14 @@ function PLZ() {
                 }
             }
 
-            //         { "procedure" ident ";" block ";" }
+            // { "procedure" ident ";" block ";" }
             function block_procedure() {
                 var token, n, b;
 
                 if (debug)
                     console.log("-- parser: block_procedure --");
 
-                token = lexer.getnext();
-                if (token.type != IDENT)
-                    error_unexpected(token);
-
+                token = getnext_t(IDENT);
                 n = token.string;
                 check_next_keyword(";");
                 b = block();
@@ -360,7 +388,7 @@ function PLZ() {
                 else if (token.is_keyword("while"))
                     return statement_while();
                 else if (token.type == IDENT)
-                    return [ NodeAssign(NodeIdent(token), statement_assign()) ];
+                    return [ NodeAssign(NodeIdent(token.string), statement_assign()) ];
                 else {
                     lexer.unget(token);
                     return null;
@@ -373,12 +401,7 @@ function PLZ() {
             }
 
             function statement_call() {
-                var token;
-
-                token = lexer.getnext();
-                if (token.type != IDENT)
-                    error_unexpected(token);
-
+                var token = getnext_t(IDENT);
                 return NodeCall(token.string);
             }
 
@@ -403,6 +426,9 @@ function PLZ() {
             function statement_if() {
                 var c, s;
 
+                if (debug)
+                    console.log("-- parser: statement_if --");
+
                 c = condition();
                 check_next_keyword("then");
                 s = statement();
@@ -422,13 +448,11 @@ function PLZ() {
             }
 
             function statement_print() {
-                var token;
-
-                token = lexer.getnext();
-                if (token.type != IDENT)
-                    error_unexpected(token);
-
-                return NodePrint(token.string);
+                var token = lexer.getnext();
+                if (token.type == IDENT)
+                    return NodePrint(NodeIdent(token.string));
+                else if (token.type == NUMBER)
+                    return NodePrint(NodeNumber(token.string));
             }
 
             // condition = "odd" expression |
@@ -442,7 +466,7 @@ function PLZ() {
                 token = lexer.getnext();
                 if (token.is_keyword("odd")) {
                     v1 = expression();
-                    return NodeOperation("odd", v1, nil);
+                    return NodeOperation("#", NodeOperation("&", v1, NodeNumber(1)), NodeNumber(0));
                 } else {
                     lexer.unget(token);
                     v1 = expression();
@@ -522,9 +546,9 @@ function PLZ() {
 
                 token = lexer.getnext();
                 if (token.type == IDENT)
-                    return NodeIdent(token);
+                    return NodeIdent(token.string);
                 else if (token.type == NUMBER)
-                    return NodeNumber(token);
+                    return NodeNumber(token.string);
                 else if (token.is_keyword("(")) {
                     r = expression();
                     check_next_keyword(")");
@@ -535,8 +559,16 @@ function PLZ() {
                 }
             }
 
+            function getnext_t(type) {
+                var token = lexer.getnext();
+                if (token.type != type)
+                    error_unexpected(token);
+
+                return token;
+            }
+
             function check_next_keyword(keyword) {
-                t = lexer.getnext();
+                var t = lexer.getnext();
                 if (!t.is_keyword(keyword))
                     error_unexpected(t);
             }
@@ -566,23 +598,24 @@ function PLZ() {
             parse: function(source) {
                 var lexer = Lexer(source);
 
-                try {
+//                try {
                     return Parser(lexer).parse();
-                } catch (e) {
-                    console.log(e);
-                    lexer.dump();
-                }
+//                } catch (e) {
+//                    console.log(e);
+//                    lexer.dump();
+//                }
             }
         };
     }
 
     function CodeGen(ast) {
-        function Environ(name, parent, vars, global) {
+        function Environ(name, parent, consts, vars, global) {
             var regs = 0;
 
             this.name = name;
             this.parent = parent;
             this.tmpregs = 0;
+            this.consts = consts
             this.vars = {};
             this.vars_count = vars.length;
             this.global = global;
@@ -594,10 +627,17 @@ function PLZ() {
             }
         }
 
+        Environ.prototype.resolv_ident = function(value) {
+            if (this.consts[value] != undefined)
+                return this.consts[value];
+            else
+                return this.getreg(value);
+        }
+
         Environ.prototype.getreg = function(value) {
             var reg = this.vars[value];
             if (reg == undefined)
-                return this.parent.getreg(value);
+                return this.parent.resolv_ident(value);
             else
                 return reg;
         };
@@ -701,7 +741,7 @@ function PLZ() {
             case "number":
                 return [ "add", reg, stmt.rnode.value, 0 ];
             case "ident":
-                return [ "add", reg, env.getreg(stmt.rnode.value), 0 ];
+                return [ "add", reg, env.resolv_ident(stmt.rnode.value), 0 ];
             case "operation":
                 return codegen_stmt_op(env, stmt.rnode, reg);
 
@@ -726,7 +766,7 @@ function PLZ() {
                 case "number":
                     return value.value;
                 case "ident":
-                    return env.getreg(value.value);
+                    return env.resolv_ident(value.value);
                 case "operation":
                     rtmp = env.gettmpreg();
                     rcode = merge_code(rcode, codegen_stmt_op(env, value, rtmp));
@@ -734,7 +774,8 @@ function PLZ() {
                     return rtmp;
 
                 default:
-                    throw "unknown value type";
+                    console.log(value);
+                    throw "unknown value type: " + value.ntype;
                 }
             }
 
@@ -755,9 +796,15 @@ function PLZ() {
             case "/":
                 rcode.push([ "div", vdst, v1, v2 ]);
                 break;
+            case "&":
+                rcode.push([ "and", vdst, v1, v2 ]);
+                break;
 
             case "=":
                 rcode.push([ "bne", vdst, v1, v2 ]);
+                break;
+            case "#":
+                rcode.push([ "beq", vdst, v1, v2 ]);
                 break;
             case "<":
                 rcode.push([ "bge", vdst, v1, v2 ]);
@@ -773,7 +820,7 @@ function PLZ() {
                 break;
 
             default:
-                throw "unknown opcode: " + stmt;
+                throw "unknown opcode: " + stmt.opcode;
             }
 
             return rcode;
@@ -831,7 +878,14 @@ function PLZ() {
         }
 
         function codegen_stmt_print(env, stmt) {
-            return [ "_print", 0, env.getreg(stmt.value), 0 ];
+            switch (stmt.value.ntype) {
+            case "number":
+                return [ "_print", 0, stmt.value.value, 0 ];
+            case "ident":
+                return [ "_print", 0, env.resolv_ident(stmt.value.value), 0 ];
+            default:
+                throw "XXX bug";
+            }
         }
 
         function print_code(code) {
@@ -889,12 +943,15 @@ function PLZ() {
 
         return {
             codegen: function(ast) {
-                var i, r, len, code = [], root_env, proc_name, proc_block, proc_env;
+                var i, j, root_env, consts, vars, code = [];
+                var proc_name, proc_block, proc_env;
 
-                for (i = 0, r = []; i < ast.vars.length; i++)
-                    r.push(ast.vars[i].value);
+                for (i = 0, consts = {}; i < ast.consts.length; i++)
+                    consts[ast.consts[i].name] = ast.consts[i].value;
+                for (i = 0, vars = []; i < ast.vars.length; i++)
+                    vars.push(ast.vars[i].value);
 
-                root_env = new Environ("main", null, r, true);
+                root_env = new Environ("main", null, consts, vars, true);
                 code.push([ "_label", "_main" ]);
                 code.push([ "_frame_main", root_env.vars_count ]);
                 code = code.concat(codegen_block(root_env, ast));
@@ -903,12 +960,12 @@ function PLZ() {
                     proc_name = ast.procedures[i].name;
                     proc_block = ast.procedures[i].block;
 
-                    for (i = 0, r = []; i < proc_block.vars.length; i++)
-                        r.push(proc_block.vars[i].value);
+                    for (j = 0, consts = {}; j < proc_block.consts.length; j++)
+                        consts[proc_block.consts[j].name] = proc_block.consts[j].value;
+                    for (j = 0, vars = []; j < proc_block.vars.length; j++)
+                        vars.push(proc_block.vars[j].value);
 
-                    proc_env = new Environ(proc_name, root_env, r, false);
-                    len = 0; for (var x in proc_env.vars) { len++; }
-
+                    proc_env = new Environ(proc_name, root_env, consts, vars, false);
                     code.push([ "_label", "_" + proc_name ]);
                     code.push([ "_frame", proc_env.vars_count ]);
                     code = code.concat(codegen_block(proc_env, proc_block));
@@ -1425,7 +1482,7 @@ function CodeGenAmd64(ilcode) {
         }
 
         function generate_epi_imm_lr(dst, opr1) {
-            return [ "mov", lraddr(dst), opr1 ];
+            return [ "mov", "qword" + lraddr(dst), opr1 ];
         }
 
         function generate_epi_imm_tr(dst, opr1) {
@@ -1588,17 +1645,17 @@ function CodeGenAmd64(ilcode) {
 
         rcode.push([ 'push', 'rbp' ]);
         rcode.push([ 'mov', 'rbp', 'rsp' ]);
-        rcode.push([ 'sub', 'rsp', dst * WORDSIZE ]);
+
+        if (dst > 0)
+            rcode.push([ 'sub', 'rsp', dst * WORDSIZE ]);
+
         return rcode;
     }
 
     function generate_code_frame_main(dst, opcode, opr1, opr2) {
-        var rcode = [];
-
-        rcode.push([ 'push', 'rbp' ]);
-        rcode.push([ 'mov', 'rbp', 'rsp' ]);
-        rcode.push([ 'sub', 'rsp', dst * WORDSIZE ]);
+        var rcode = generate_code_frame(dst, opcode, opr1, opr2);
         rcode.push([ 'mov', 'r15', 'rbp' ]);
+
         return rcode;
     }
 
@@ -1714,11 +1771,43 @@ function CodeGenAmd64(ilcode) {
         return generate_code(dst, opr1, opr2, t);
     }
 
+    function generate_code_and(dst, opcode, opr1, opr2) {
+        function and_reg(opr1, opr2) {
+            return [ [ "and", opr1, opr2 ] ];
+        };
+
+        var t = [
+            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: false, codegen: and_reg },
+            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: false, codegen: and_reg },
+            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: false, codegen: and_reg },
+            ];
+
+        return generate_code(dst, opr1, opr2, t);
+    }
+
     function generate_code_bne(dst, opcode, opr1, opr2) {
         var f = function(opr1, opr2) {
             var rcode = [];
             rcode.push([ "cmp", opr1, opr2 ]);
             rcode.push([ "jne", dst ]);
+            return [ rcode ];
+        };
+
+        var t = [
+            { srcspec: [ "reg", "reg" ], srcswap: false, codegen: f },
+            { srcspec: [ "reg", "imm" ], srcswap: false, codegen: f },
+            { srcspec: [ "reg", "mem" ], srcswap: false, codegen: f },
+            { srcspec: [ "mem", "imm" ], srcswap: false, codegen: f },
+            ];
+
+        return generate_code(dst, opr1, opr2, t);
+    }
+
+    function generate_code_beq(dst, opcode, opr1, opr2) {
+        var f = function(opr1, opr2) {
+            var rcode = [];
+            rcode.push([ "cmp", opr1, opr2 ]);
+            rcode.push([ "je", dst ]);
             return [ rcode ];
         };
 
@@ -1861,8 +1950,10 @@ function CodeGenAmd64(ilcode) {
         "sub": generate_code_sub,
         "mul": generate_code_mul,
         "div": generate_code_div,
+        "and": generate_code_and,
 
         "bne": generate_code_bne,
+        "beq": generate_code_beq,
         "bge": generate_code_bge,
         "bgt": generate_code_bgt,
         "ble": generate_code_ble,
@@ -1917,7 +2008,7 @@ function CodeGenAmd64(ilcode) {
         console.log("	cmp	rsi, r8");
         console.log("	jne	__print_itos_loop");
         console.log("__print_write:");
-        console.log("	; RSI = start of valid buffer");
+        console.log("	; RSI = start of buffer");
         console.log("	; len = 17 - (RSI - R8)");
         console.log("	lea	rdx, [r8 + 17]");
         console.log("	sub	rdx, rsi");
@@ -1925,7 +2016,7 @@ function CodeGenAmd64(ilcode) {
         console.log("	mov	edi, 1");
         console.log("	syscall");
         console.log("	mov	rsp, rbp");
-        console.log("	pop rbp");
+        console.log("	pop	rbp");
         console.log("	ret");
     }
 
