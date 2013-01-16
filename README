@@ -1,0 +1,8 @@
+Requirement:
+
+  * Mac OS X running on 64bit machine.
+  * nasm 2.0 or later.
+
+How to compile sample source:
+
+  $ plzc sum.pl0

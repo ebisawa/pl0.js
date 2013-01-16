@@ -1,0 +1,8 @@
+#!/bin/sh
+pc="node plz.js"
+srcbase=`basename $1 .PL0`
+srcbase=`basename $srcbase .pl0`
+
+$pc $1 >${srcbase}.nasm
+nasm -f macho64 -o ${srcbase}.o ${srcbase}.nasm
+gcc -o ${srcbase} ${srcbase}.o

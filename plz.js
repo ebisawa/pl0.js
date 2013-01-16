@@ -1221,6 +1221,8 @@ function CodeGenAmd64(ilcode) {
                 if (iareg_status[key].vreg == vreg)
                     return key;
             }
+
+            return undefined;
         }
 
         iareg_init();
@@ -1314,7 +1316,10 @@ function CodeGenAmd64(ilcode) {
             if ((reg = Regs.vreg_resolv_iareg(opr)) != "rax") {
                 Regs.iareg_use_reg("rax", function(code) { rcode.push(code); });
 
-                rcode.push([ "mov", "rax", graddr(opr) ]);
+                if (reg != undefined)
+                    rcode.push([ "mov", "rax", reg ]);
+                else
+                    rcode.push([ "mov", "rax", graddr(opr) ]);
 
                 Regs.iareg_assoc_vreg("rax", opr);
             }
@@ -1347,7 +1352,10 @@ function CodeGenAmd64(ilcode) {
             if ((reg = Regs.vreg_resolv_iareg(opr)) != "rax") {
                 Regs.iareg_use_reg("rax", function(code) { rcode.push(code); });
 
-                rcode.push([ "mov", "rax", lraddr(opr) ]);
+                if (reg != undefined)
+                    rcode.push([ "mov", "rax", reg ]);
+                else
+                    rcode.push([ "mov", "rax", lraddr(opr) ]);
 
                 Regs.iareg_assoc_vreg("rax", opr);
             }
@@ -1379,6 +1387,9 @@ function CodeGenAmd64(ilcode) {
 
             if ((reg = Regs.vreg_resolv_iareg(opr)) != "rax") {
                 Regs.iareg_use_reg("rax", function(code) { rcode.push(code); });
+
+                if (reg == undefined)
+                    throw "XXX bug";
 
                 rcode.push([ "mov", "rax", reg ]);
 
@@ -1661,14 +1672,12 @@ function CodeGenAmd64(ilcode) {
 
     function generate_code_print(dst, opcode, opr1, opr2) {
         var f = function(opr1, opr2) {
-            var rcode = [];
-            rcode.push([ "call", "_print" ]);
             Regs.iareg_init();
-            return [ rcode ];
+            return [ [ "call", "_print" ] ];
         };
 
         var t = [
-            { srcspec: [ "rax", "imm" ], srcswap: false, codegen: f },
+            { srcspec: [ "rax", "imm" ], codegen: f },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1678,30 +1687,27 @@ function CodeGenAmd64(ilcode) {
         function add_reg(opr1, opr2) {
             if (opr2 == 0)
                 return [ [] ];
-            else
-                return [ [ "add", opr1, opr2 ] ];
+
+            return [ [ "add", opr1, opr2 ] ];
         };
 
         function add_imm(opr1, opr2) {
-            return [ undefined, opr1 + opr2 ];
+            return [ [ undefined, opr1 + opr2 ] ];
         };
 
         var t = [
-            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: true, codegen: add_reg },
-            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: true, codegen: add_reg },
-            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: true, codegen: add_reg },
-            { srcspec: [ "imm", "imm" ], dstspec: "imm", srcswap: true, codegen: add_imm },
+            { srcspec: [ "reg", "reg" ], dstspec: "reg", codegen: add_reg, srcswap: true },
+            { srcspec: [ "reg", "imm" ], dstspec: "reg", codegen: add_reg, srcswap: true },
+            { srcspec: [ "reg", "mem" ], dstspec: "reg", codegen: add_reg, srcswap: true },
+//            { srcspec: [ "imm", "imm" ], dstspec: "imm", codegen: add_imm },
             ];
 
         return generate_code(dst, opr1, opr2, t);
     }
 
     function generate_code_sub(dst, opcode, opr1, opr2) {
-	function sub_reg(opr1, opr2) {
-            if (opr2 == 0)
-                return [ [] ];
-            else
-               return [ [ "sub", opr1, opr2 ] ];
+        function sub_reg(opr1, opr2) {
+            return [ [ "sub", opr1, opr2 ] ];
         };
 
         function sub_imm(opr1, opr2) {
@@ -1709,10 +1715,10 @@ function CodeGenAmd64(ilcode) {
         };
 
         var t = [
-            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: false, codegen: sub_reg },
-            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: false, codegen: sub_reg },
-            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: false, codegen: sub_reg },
-            { srcspec: [ "imm", "imm" ], dstspec: "imm", srcswap: false, codegen: sub_imm },
+            { srcspec: [ "reg", "reg" ], dstspec: "reg", codegen: sub_reg },
+            { srcspec: [ "reg", "imm" ], dstspec: "reg", codegen: sub_reg },
+            { srcspec: [ "reg", "mem" ], dstspec: "reg", codegen: sub_reg },
+//            { srcspec: [ "imm", "imm" ], dstspec: "imm", codegen: sub_imm },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1722,7 +1728,7 @@ function CodeGenAmd64(ilcode) {
         // mul reg/mem -> edx:rax = rax * r/m
         function mul_reg1(opr1, opr2) {
             Regs.iareg_destroy("rdx");
-            return [ [ "imul", opr2 ] ];
+            return [ [ "mul", opr2 ] ];
         };
 
         function mul_reg2(opr1, opr2) {
@@ -1731,18 +1737,18 @@ function CodeGenAmd64(ilcode) {
 
 
         function mul_imm(opr1, opr2) {
-            return [ undefined, opr1 * opr2 ];
+            return [ undefined, opr1 * opr2 ]
         };
 
         var t = [
-            { srcspec: [ "rax", "reg" ], dstspec: "rax", srcswap: true, codegen: mul_reg1 },
-            { srcspec: [ "rax", "mem" ], dstspec: "rax", srcswap: true, codegen: mul_reg1 },
+            { srcspec: [ "rax", "reg" ], dstspec: "rax", codegen: mul_reg1, srcswap: true },
+            { srcspec: [ "rax", "mem" ], dstspec: "rax", codegen: mul_reg1, srcswap: true },
 
-//            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
-//            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
-//            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: true, codegen: mul_reg2 },
+//            { srcspec: [ "reg", "reg" ], dstspec: "reg", codegen: mul_reg2 },
+//            { srcspec: [ "reg", "mem" ], dstspec: "reg", codegen: mul_reg2 },
+//            { srcspec: [ "reg", "imm" ], dstspec: "reg", codegen: mul_reg2 },
 
-            { srcspec: [ "imm", "imm" ], dstspec: "imm", srcswap: true, codegen: mul_imm },
+//            { srcspec: [ "imm", "imm" ], dstspec: "imm", codegen: mul_imm },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1763,9 +1769,9 @@ function CodeGenAmd64(ilcode) {
         };
 
         var t = [
-            { srcspec: [ "rax", "reg" ], dstspec: "rax", srcswap: false, codegen: div_reg },
-            { srcspec: [ "rax", "mem" ], dstspec: "rax", srcswap: false, codegen: div_reg },
-            { srcspec: [ "imm", "imm" ], dstspec: "imm", srcswap: false, codegen: div_imm },
+            { srcspec: [ "rax", "reg" ], dstspec: "rax", codegen: div_reg },
+            { srcspec: [ "rax", "mem" ], dstspec: "rax", codegen: div_reg },
+//            { srcspec: [ "imm", "imm" ], dstspec: "imm", codegen: div_imm },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1777,9 +1783,9 @@ function CodeGenAmd64(ilcode) {
         };
 
         var t = [
-            { srcspec: [ "reg", "reg" ], dstspec: "reg", srcswap: false, codegen: and_reg },
-            { srcspec: [ "reg", "imm" ], dstspec: "reg", srcswap: false, codegen: and_reg },
-            { srcspec: [ "reg", "mem" ], dstspec: "reg", srcswap: false, codegen: and_reg },
+            { srcspec: [ "reg", "reg" ], dstspec: "reg", codegen: and_reg, srcswap: true },
+            { srcspec: [ "reg", "imm" ], dstspec: "reg", codegen: and_reg, srcswap: true },
+            { srcspec: [ "reg", "mem" ], dstspec: "reg", codegen: and_reg, srcswap: true },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1794,10 +1800,10 @@ function CodeGenAmd64(ilcode) {
         };
 
         var t = [
-            { srcspec: [ "reg", "reg" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "imm" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "mem" ], srcswap: false, codegen: f },
-            { srcspec: [ "mem", "imm" ], srcswap: false, codegen: f },
+            { srcspec: [ "reg", "reg" ], codegen: f },
+            { srcspec: [ "reg", "imm" ], codegen: f },
+            { srcspec: [ "reg", "mem" ], codegen: f },
+            { srcspec: [ "mem", "imm" ], codegen: f },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1812,10 +1818,10 @@ function CodeGenAmd64(ilcode) {
         };
 
         var t = [
-            { srcspec: [ "reg", "reg" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "imm" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "mem" ], srcswap: false, codegen: f },
-            { srcspec: [ "mem", "imm" ], srcswap: false, codegen: f },
+            { srcspec: [ "reg", "reg" ], codegen: f },
+            { srcspec: [ "reg", "imm" ], codegen: f },
+            { srcspec: [ "reg", "mem" ], codegen: f },
+            { srcspec: [ "mem", "imm" ], codegen: f },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1830,10 +1836,10 @@ function CodeGenAmd64(ilcode) {
         };
 
         var t = [
-            { srcspec: [ "reg", "reg" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "imm" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "mem" ], srcswap: false, codegen: f },
-            { srcspec: [ "mem", "imm" ], srcswap: false, codegen: f },
+            { srcspec: [ "reg", "reg" ], codegen: f },
+            { srcspec: [ "reg", "imm" ], codegen: f },
+            { srcspec: [ "reg", "mem" ], codegen: f },
+            { srcspec: [ "mem", "imm" ], codegen: f },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1848,10 +1854,10 @@ function CodeGenAmd64(ilcode) {
         };
 
         var t = [
-            { srcspec: [ "reg", "reg" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "imm" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "mem" ], srcswap: false, codegen: f },
-            { srcspec: [ "mem", "imm" ], srcswap: false, codegen: f },
+            { srcspec: [ "reg", "reg" ], codegen: f },
+            { srcspec: [ "reg", "imm" ], codegen: f },
+            { srcspec: [ "reg", "mem" ], codegen: f },
+            { srcspec: [ "mem", "imm" ], codegen: f },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1866,10 +1872,10 @@ function CodeGenAmd64(ilcode) {
         };
 
         var t = [
-            { srcspec: [ "reg", "reg" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "imm" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "mem" ], srcswap: false, codegen: f },
-            { srcspec: [ "mem", "imm" ], srcswap: false, codegen: f },
+            { srcspec: [ "reg", "reg" ], codegen: f },
+            { srcspec: [ "reg", "imm" ], codegen: f },
+            { srcspec: [ "reg", "mem" ], codegen: f },
+            { srcspec: [ "mem", "imm" ], codegen: f },
             ];
 
         return generate_code(dst, opr1, opr2, t);
@@ -1884,10 +1890,10 @@ function CodeGenAmd64(ilcode) {
         };
 
         var t = [
-            { srcspec: [ "reg", "reg" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "imm" ], srcswap: false, codegen: f },
-            { srcspec: [ "reg", "mem" ], srcswap: false, codegen: f },
-            { srcspec: [ "mem", "imm" ], srcswap: false, codegen: f },
+            { srcspec: [ "reg", "reg" ], codegen: f },
+            { srcspec: [ "reg", "imm" ], codegen: f },
+            { srcspec: [ "reg", "mem" ], codegen: f },
+            { srcspec: [ "mem", "imm" ], codegen: f },
             ];
 
         return generate_code(dst, opr1, opr2, t);
