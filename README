@@ -1,6 +1,7 @@
 Requirement:
 
   * Mac OS X running on 64bit machine.
+  * node.js 0.4 or later.
   * nasm 2.0 or later.
 
 How to compile sample source:
